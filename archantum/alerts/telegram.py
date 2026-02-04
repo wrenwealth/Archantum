@@ -14,6 +14,10 @@ from archantum.analysis.arbitrage import ArbitrageOpportunity
 from archantum.analysis.volume import VolumeSpike
 from archantum.analysis.price import PriceMovement
 from archantum.analysis.trends import TrendSignal
+from archantum.analysis.whale import WhaleActivity
+from archantum.analysis.new_market import NewMarket
+from archantum.analysis.resolution import ResolutionAlert
+from archantum.analysis.liquidity import LiquidityChange
 
 
 console = Console()
@@ -195,6 +199,141 @@ class TelegramAlerter:
             alert_type="trend",
             message=message,
             details=signal.to_dict(),
+        )
+
+    def format_whale_alert(self, whale: WhaleActivity) -> AlertMessage:
+        """Format a whale activity as an alert."""
+        emoji = "🐋"
+        direction_emoji = "🟢" if whale.direction == "buy" else "🔴" if whale.direction == "sell" else "⚪"
+        link = f"https://polymarket.com/event/{whale.slug}" if whale.slug else "N/A"
+
+        message = f"""{emoji} <b>WHALE ACTIVITY DETECTED</b>
+
+<b>Market:</b> {whale.question[:100]}...
+
+<b>Estimated Trade:</b> ${whale.estimated_trade_size:,.0f}
+<b>Volume Change:</b> +{whale.volume_change_pct:.1f}%
+<b>Direction:</b> {direction_emoji} {whale.direction.upper()}
+
+<b>Previous 24h Vol:</b> ${whale.previous_volume:,.0f}
+<b>Current 24h Vol:</b> ${whale.current_volume:,.0f}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=whale.market_id,
+            alert_type="whale",
+            message=message,
+            details=whale.to_dict(),
+        )
+
+    def format_new_market_alert(self, market: NewMarket) -> AlertMessage:
+        """Format a new market as an alert."""
+        emoji = "🆕"
+        link = f"https://polymarket.com/event/{market.slug}" if market.slug else "N/A"
+
+        # Format prices
+        prices_text = ""
+        if market.outcomes and market.outcome_prices:
+            for outcome, price in zip(market.outcomes, market.outcome_prices):
+                prices_text += f"\n  {outcome}: ${float(price):.2f}"
+
+        message = f"""{emoji} <b>NEW INTERESTING MARKET</b>
+
+<b>Question:</b> {market.question[:150]}{'...' if len(market.question) > 150 else ''}
+
+<b>24h Volume:</b> ${market.volume_24hr:,.0f}
+<b>Liquidity:</b> ${market.liquidity:,.0f}
+<b>Prices:</b>{prices_text}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=market.market_id,
+            alert_type="new_market",
+            message=message,
+            details=market.to_dict(),
+        )
+
+    def format_resolution_alert(self, resolution: ResolutionAlert) -> AlertMessage:
+        """Format a resolution alert."""
+        # Choose emoji based on urgency
+        hours = resolution.hours_until_resolution
+        if hours <= 1:
+            emoji = "🔴"
+            urgency = "RESOLVING SOON"
+        elif hours <= 6:
+            emoji = "🟠"
+            urgency = "RESOLVING TODAY"
+        elif hours <= 24:
+            emoji = "🟡"
+            urgency = "RESOLVING TOMORROW"
+        else:
+            emoji = "⏰"
+            urgency = "RESOLUTION APPROACHING"
+
+        link = f"https://polymarket.com/event/{resolution.slug}" if resolution.slug else "N/A"
+
+        # Format time remaining
+        if hours < 1:
+            time_str = f"{int(hours * 60)} minutes"
+        elif hours < 24:
+            time_str = f"{hours:.1f} hours"
+        else:
+            time_str = f"{hours / 24:.1f} days"
+
+        # Format prices
+        prices_text = ""
+        if resolution.outcome_prices:
+            for i, price in enumerate(resolution.outcome_prices):
+                outcome = "Yes" if i == 0 else "No"
+                prices_text += f"\n  {outcome}: ${float(price):.2f}"
+
+        message = f"""{emoji} <b>{urgency}</b>
+
+<b>Market:</b> {resolution.question[:120]}{'...' if len(resolution.question) > 120 else ''}
+
+<b>Resolves in:</b> {time_str}
+<b>End Date:</b> {resolution.end_date.strftime('%Y-%m-%d %H:%M UTC')}
+<b>Current Prices:</b>{prices_text}
+
+<b>24h Volume:</b> ${resolution.volume_24hr:,.0f}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=resolution.market_id,
+            alert_type="resolution",
+            message=message,
+            details=resolution.to_dict(),
+        )
+
+    def format_liquidity_alert(self, change: LiquidityChange) -> AlertMessage:
+        """Format a liquidity change as an alert."""
+        if change.direction == "added":
+            emoji = "💧"
+            action = "LIQUIDITY ADDED"
+        else:
+            emoji = "🚰"
+            action = "LIQUIDITY REMOVED"
+
+        link = f"https://polymarket.com/event/{change.slug}" if change.slug else "N/A"
+
+        message = f"""{emoji} <b>{action}</b>
+
+<b>Market:</b> {change.question[:100]}...
+
+<b>Change:</b> ${change.change_amount:,.0f} ({change.change_pct:.1f}%)
+<b>Previous:</b> ${change.previous_liquidity:,.0f}
+<b>Current:</b> ${change.current_liquidity:,.0f}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=change.market_id,
+            alert_type="liquidity",
+            message=message,
+            details=change.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:

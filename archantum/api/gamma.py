@@ -29,6 +29,7 @@ class GammaMarket(BaseModel):
     active: bool = True
     closed: bool = False
     clob_token_ids: list[str] | None = Field(default=None, alias="clobTokenIds")
+    end_date: str | None = Field(default=None, alias="endDate")
 
     @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
     @classmethod
