@@ -161,12 +161,16 @@ Use /help to see all available commands."""
                 vol = m.volume_24hr or 0
                 prices = m.outcome_prices or []
                 yes_price = float(prices[0]) if prices else 0
+                link = f"https://polymarket.com/event/{m.slug}" if m.slug else None
 
                 text += f"{i}. <b>{m.question[:50]}{'...' if len(m.question) > 50 else ''}</b>\n"
                 text += f"   Yes: ${yes_price:.2f} | Vol: ${vol:,.0f}\n"
-                text += f"   ID: <code>{m.id}</code>\n\n"
+                if link:
+                    text += f"   <a href='{link}'>View on Polymarket</a>\n\n"
+                else:
+                    text += f"   ID: <code>{m.id}</code>\n\n"
 
-            await update.message.reply_text(text, parse_mode="HTML")
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
         except Exception as e:
             await update.message.reply_text(f"Error fetching markets: {e}")
@@ -189,10 +193,14 @@ Use /help to see all available commands."""
 
             text = f"<b>Search Results for '{query}'</b>\n\n"
             for i, m in enumerate(markets, 1):
+                link = f"https://polymarket.com/event/{m.slug}" if m.slug else None
                 text += f"{i}. <b>{m.question[:60]}{'...' if len(m.question) > 60 else ''}</b>\n"
-                text += f"   ID: <code>{m.id}</code>\n\n"
+                if link:
+                    text += f"   <a href='{link}'>View on Polymarket</a>\n\n"
+                else:
+                    text += f"   ID: <code>{m.id}</code>\n\n"
 
-            await update.message.reply_text(text, parse_mode="HTML")
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
         except Exception as e:
             await update.message.reply_text(f"Error searching: {e}")
@@ -307,12 +315,17 @@ Use /help to see all available commands."""
                     # Get latest price
                     price = await self.db.get_latest_price_snapshot(item.market_id)
                     price_str = f"${price.yes_price:.2f}" if price else "N/A"
+                    link = f"https://polymarket.com/event/{market.slug}" if market.slug else None
 
                     text += f"{i}. <b>{market.question[:45]}...</b>\n"
-                    text += f"   Yes: {price_str} | ID: <code>{market.id}</code>\n\n"
+                    text += f"   Yes: {price_str}"
+                    if link:
+                        text += f" | <a href='{link}'>Open</a>\n\n"
+                    else:
+                        text += f" | ID: <code>{market.id}</code>\n\n"
 
             text += "Use /unwatch <id> to remove"
-            await update.message.reply_text(text, parse_mode="HTML")
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
         except Exception as e:
             await update.message.reply_text(f"Error fetching watchlist: {e}")
