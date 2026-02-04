@@ -18,6 +18,8 @@ from archantum.analysis.whale import WhaleActivity
 from archantum.analysis.new_market import NewMarket
 from archantum.analysis.resolution import ResolutionAlert
 from archantum.analysis.liquidity import LiquidityChange
+from archantum.analysis.scoring import ScoreSpikeAlert
+from archantum.analysis.accuracy import AccuracyTracker
 
 
 console = Console()
@@ -36,9 +38,13 @@ class AlertMessage:
 class TelegramAlerter:
     """Handles sending alerts via Telegram with console fallback."""
 
+    # Alert types that should be tracked for accuracy
+    TRACKED_ALERT_TYPES = {'arbitrage', 'volume_spike', 'price_move', 'trend', 'whale'}
+
     def __init__(self, db: Database):
         self.db = db
         self.bot: Bot | None = None
+        self.accuracy_tracker = AccuracyTracker(db)
 
         if settings.telegram_configured:
             self.bot = Bot(token=settings.telegram_bot_token)
@@ -51,14 +57,28 @@ class TelegramAlerter:
 
     async def send_alert(self, alert: AlertMessage) -> bool:
         """Send an alert via Telegram or console fallback."""
+        from datetime import datetime
+
         # Save to database
-        await self.db.save_alert(
+        saved_alert = await self.db.save_alert(
             market_id=alert.market_id,
             alert_type=alert.alert_type,
             message=alert.message,
             details=alert.details,
             sent=False,
         )
+
+        # Record for accuracy tracking if applicable
+        if alert.alert_type in self.TRACKED_ALERT_TYPES:
+            try:
+                await self.accuracy_tracker.record_alert_for_tracking(
+                    alert_id=saved_alert.id,
+                    market_id=alert.market_id,
+                    alert_type=alert.alert_type,
+                    alert_timestamp=saved_alert.timestamp,
+                )
+            except Exception as e:
+                console.print(f"[yellow]Could not record alert for tracking: {e}[/yellow]")
 
         # Try Telegram
         if self.telegram_enabled:
@@ -95,7 +115,7 @@ class TelegramAlerter:
         """Format an arbitrage opportunity as an alert."""
         emoji = "🚨"
         direction_text = "underpriced" if opp.direction == "under" else "overpriced"
-        link = f"https://polymarket.com/event/{opp.slug}" if opp.slug else "N/A"
+        link = opp.polymarket_url or "N/A"
 
         message = f"""{emoji} <b>ARBITRAGE OPPORTUNITY</b>
 
@@ -120,7 +140,7 @@ class TelegramAlerter:
     def format_volume_alert(self, spike: VolumeSpike) -> AlertMessage:
         """Format a volume spike as an alert."""
         emoji = "📈"
-        link = f"https://polymarket.com/event/{spike.slug}" if spike.slug else "N/A"
+        link = spike.polymarket_url or "N/A"
 
         message = f"""{emoji} <b>VOLUME SPIKE DETECTED</b>
 
@@ -142,7 +162,7 @@ class TelegramAlerter:
     def format_price_move_alert(self, movement: PriceMovement) -> AlertMessage:
         """Format a price movement as an alert."""
         emoji = "⬆️" if movement.direction == "up" else "⬇️"
-        link = f"https://polymarket.com/event/{movement.slug}" if movement.slug else "N/A"
+        link = movement.polymarket_url or "N/A"
 
         message = f"""{emoji} <b>SIGNIFICANT PRICE MOVEMENT</b>
 
@@ -173,7 +193,7 @@ class TelegramAlerter:
             "reversal_down": "🔄⬇️",
         }
         emoji = emoji_map.get(signal.signal, "📊")
-        link = f"https://polymarket.com/event/{signal.slug}" if signal.slug else "N/A"
+        link = signal.polymarket_url or "N/A"
 
         ma_text = []
         if signal.ma_1h:
@@ -205,7 +225,7 @@ class TelegramAlerter:
         """Format a whale activity as an alert."""
         emoji = "🐋"
         direction_emoji = "🟢" if whale.direction == "buy" else "🔴" if whale.direction == "sell" else "⚪"
-        link = f"https://polymarket.com/event/{whale.slug}" if whale.slug else "N/A"
+        link = whale.polymarket_url or "N/A"
 
         message = f"""{emoji} <b>WHALE ACTIVITY DETECTED</b>
 
@@ -230,7 +250,7 @@ class TelegramAlerter:
     def format_new_market_alert(self, market: NewMarket) -> AlertMessage:
         """Format a new market as an alert."""
         emoji = "🆕"
-        link = f"https://polymarket.com/event/{market.slug}" if market.slug else "N/A"
+        link = market.polymarket_url or "N/A"
 
         # Format prices
         prices_text = ""
@@ -272,7 +292,7 @@ class TelegramAlerter:
             emoji = "⏰"
             urgency = "RESOLUTION APPROACHING"
 
-        link = f"https://polymarket.com/event/{resolution.slug}" if resolution.slug else "N/A"
+        link = resolution.polymarket_url or "N/A"
 
         # Format time remaining
         if hours < 1:
@@ -317,7 +337,7 @@ class TelegramAlerter:
             emoji = "🚰"
             action = "LIQUIDITY REMOVED"
 
-        link = f"https://polymarket.com/event/{change.slug}" if change.slug else "N/A"
+        link = change.polymarket_url or "N/A"
 
         message = f"""{emoji} <b>{action}</b>
 
@@ -334,6 +354,38 @@ class TelegramAlerter:
             alert_type="liquidity",
             message=message,
             details=change.to_dict(),
+        )
+
+    def format_score_spike_alert(self, spike: ScoreSpikeAlert) -> AlertMessage:
+        """Format a score spike as an alert."""
+        emoji = "📊"
+        link = spike.polymarket_url or "N/A"
+
+        # Determine change emoji
+        if spike.score_change >= 25:
+            change_emoji = "🚀"
+        elif spike.score_change >= 20:
+            change_emoji = "📈"
+        else:
+            change_emoji = "⬆️"
+
+        message = f"""{emoji} <b>MARKET SCORE SPIKE</b>
+
+<b>Market:</b> {spike.question[:100]}...
+
+<b>Previous:</b> {spike.previous_score:.0f}/100
+<b>Current:</b> {spike.current_score:.0f}/100
+<b>Change:</b> {change_emoji} +{spike.score_change:.0f} points
+
+<b>Top Factor:</b> {spike.top_factor}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=spike.market_id,
+            alert_type="score_spike",
+            message=message,
+            details=spike.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:

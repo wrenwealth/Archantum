@@ -16,6 +16,7 @@ class LiquidityChange:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     previous_liquidity: float
     current_liquidity: float
     change_amount: float
@@ -86,6 +87,7 @@ class LiquidityAnalyzer:
                         market_id=market.id,
                         question=market.question,
                         slug=market.slug,
+                        polymarket_url=market.polymarket_url,
                         previous_liquidity=previous_liquidity,
                         current_liquidity=current_liquidity,
                         change_amount=abs(change_amount),

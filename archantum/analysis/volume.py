@@ -15,6 +15,7 @@ class VolumeSpike:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     current_volume: float
     average_volume: float
     spike_multiplier: float
@@ -25,6 +26,7 @@ class VolumeSpike:
             "market_id": self.market_id,
             "question": self.question,
             "slug": self.slug,
+            "polymarket_url": self.polymarket_url,
             "current_volume": self.current_volume,
             "average_volume": self.average_volume,
             "spike_multiplier": self.spike_multiplier,
@@ -95,6 +97,7 @@ class VolumeAnalyzer:
             market_id=market.id,
             question=market.question,
             slug=market.slug,
+            polymarket_url=market.polymarket_url,
             current_volume=current_volume,
             average_volume=avg_volume,
             spike_multiplier=multiplier,

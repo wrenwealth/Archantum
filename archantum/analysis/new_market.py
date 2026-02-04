@@ -17,6 +17,7 @@ class NewMarket:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     volume_24hr: float
     liquidity: float
     outcomes: list[str]
@@ -84,6 +85,7 @@ class NewMarketAnalyzer:
                     market_id=market.id,
                     question=market.question,
                     slug=market.slug,
+                    polymarket_url=market.polymarket_url,
                     volume_24hr=volume,
                     liquidity=liquidity,
                     outcomes=market.outcomes or [],

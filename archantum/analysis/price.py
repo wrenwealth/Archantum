@@ -17,6 +17,7 @@ class PriceMovement:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     current_yes_price: float
     previous_yes_price: float
     price_change_pct: float
@@ -29,6 +30,7 @@ class PriceMovement:
             "market_id": self.market_id,
             "question": self.question,
             "slug": self.slug,
+            "polymarket_url": self.polymarket_url,
             "current_yes_price": self.current_yes_price,
             "previous_yes_price": self.previous_yes_price,
             "price_change_pct": self.price_change_pct,
@@ -111,6 +113,7 @@ class PriceAnalyzer:
             market_id=market.id,
             question=market.question,
             slug=market.slug,
+            polymarket_url=market.polymarket_url,
             current_yes_price=current_price.yes_price,
             previous_yes_price=old_snapshot.yes_price,
             price_change_pct=price_change_pct * 100,

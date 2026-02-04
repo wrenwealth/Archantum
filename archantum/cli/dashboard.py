@@ -41,9 +41,17 @@ class Dashboard:
             Layout(name="footer", size=3),
         )
 
+        # Split body into left sidebar and main content
         layout["body"].split_row(
-            Layout(name="overview", ratio=1),
-            Layout(name="opportunities", ratio=2),
+            Layout(name="sidebar", ratio=1),
+            Layout(name="main", ratio=2),
+            Layout(name="right", ratio=1),
+        )
+
+        # Split sidebar into overview and accuracy
+        layout["sidebar"].split_column(
+            Layout(name="overview"),
+            Layout(name="accuracy"),
         )
 
         # Header
@@ -58,9 +66,17 @@ class Dashboard:
         overview = await self._build_overview_panel()
         layout["overview"].update(overview)
 
-        # Opportunities panel
+        # Accuracy panel
+        accuracy = await self._build_accuracy_panel()
+        layout["accuracy"].update(accuracy)
+
+        # Main alerts panel
         opportunities = await self._build_opportunities_panel()
-        layout["opportunities"].update(opportunities)
+        layout["main"].update(opportunities)
+
+        # Top markets panel
+        top_markets = await self._build_top_markets_panel()
+        layout["right"].update(top_markets)
 
         # Footer
         layout["footer"].update(
@@ -101,6 +117,87 @@ class Dashboard:
         content.add_row("  Price Move:", str(price_count))
 
         return Panel(content, title="Market Overview", border_style="green")
+
+    async def _build_accuracy_panel(self) -> Panel:
+        """Build the accuracy statistics panel."""
+        content = Table.grid(padding=(0, 2))
+        content.add_column(style="bold")
+        content.add_column()
+
+        try:
+            stats = await self.db.get_accuracy_stats()
+
+            overall_pct = stats.get('overall_accuracy_pct', 0)
+            total = stats.get('total_evaluated', 0)
+
+            # Color based on accuracy
+            if overall_pct >= 60:
+                pct_style = "[green]"
+            elif overall_pct >= 40:
+                pct_style = "[yellow]"
+            else:
+                pct_style = "[red]"
+
+            content.add_row("Overall:", f"{pct_style}{overall_pct:.1f}%[/]")
+            content.add_row("Evaluated:", str(total))
+            content.add_row("", "")
+
+            # By type breakdown
+            by_type = stats.get('by_type', {})
+            for alert_type, type_stats in by_type.items():
+                if type_stats.get('total', 0) > 0:
+                    type_pct = type_stats.get('accuracy_pct', 0)
+                    type_name = alert_type.replace('_', ' ').title()[:12]
+                    content.add_row(f"  {type_name}:", f"{type_pct:.0f}%")
+
+        except Exception:
+            content.add_row("No data", "yet")
+
+        return Panel(content, title="Accuracy", border_style="magenta")
+
+    async def _build_top_markets_panel(self) -> Panel:
+        """Build the top markets by score panel."""
+        table = Table(
+            expand=True,
+            show_header=True,
+            header_style="bold cyan",
+            box=None,
+        )
+
+        table.add_column("#", style="dim", width=2)
+        table.add_column("Market", style="white", no_wrap=True, max_width=25)
+        table.add_column("Score", style="green", justify="right", width=5)
+        table.add_column("Chg", style="dim", justify="right", width=5)
+
+        try:
+            top_markets = await self.db.get_top_scored_markets(limit=10)
+
+            for i, (market, score) in enumerate(top_markets, 1):
+                market_name = market.question[:22] + "..." if len(market.question) > 22 else market.question
+
+                # Format score
+                score_str = f"{score.total_score:.0f}"
+
+                # Format change
+                if score.score_change is not None:
+                    if score.score_change > 0:
+                        change_str = f"[green]+{score.score_change:.0f}[/green]"
+                    elif score.score_change < 0:
+                        change_str = f"[red]{score.score_change:.0f}[/red]"
+                    else:
+                        change_str = "0"
+                else:
+                    change_str = "-"
+
+                table.add_row(str(i), market_name, score_str, change_str)
+
+            if not top_markets:
+                table.add_row("-", "No scored markets", "-", "-")
+
+        except Exception:
+            table.add_row("-", "Loading...", "-", "-")
+
+        return Panel(table, title="Top 10 Markets", border_style="cyan")
 
     async def _build_opportunities_panel(self) -> Panel:
         """Build the active opportunities panel."""

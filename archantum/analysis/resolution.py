@@ -17,6 +17,7 @@ class ResolutionAlert:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     end_date: datetime
     hours_until_resolution: float
     volume_24hr: float
@@ -90,6 +91,7 @@ class ResolutionAnalyzer:
                                 market_id=market.id,
                                 question=market.question,
                                 slug=market.slug,
+                                polymarket_url=market.polymarket_url,
                                 end_date=end_date,
                                 hours_until_resolution=hours_until,
                                 volume_24hr=market.volume_24hr or 0,

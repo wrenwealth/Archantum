@@ -15,6 +15,7 @@ class TrendSignal:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     current_price: float
     ma_1h: float | None
     ma_4h: float | None
@@ -28,6 +29,7 @@ class TrendSignal:
             "market_id": self.market_id,
             "question": self.question,
             "slug": self.slug,
+            "polymarket_url": self.polymarket_url,
             "current_price": self.current_price,
             "ma_1h": self.ma_1h,
             "ma_4h": self.ma_4h,
@@ -77,6 +79,7 @@ class TrendAnalyzer:
             market_id=market.id,
             question=market.question,
             slug=market.slug,
+            polymarket_url=market.polymarket_url,
             current_price=current_price,
             ma_1h=ma_1h,
             ma_4h=ma_4h,

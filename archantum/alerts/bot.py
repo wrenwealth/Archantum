@@ -18,6 +18,7 @@ from archantum.config import settings
 from archantum.db import Database
 from archantum.api import GammaClient
 from archantum.analysis.historical import HistoricalAnalyzer
+from archantum.analysis.scoring import MarketScorer
 
 
 console = Console()
@@ -30,6 +31,7 @@ class TelegramBot:
         self.db = db
         self.application: Application | None = None
         self.historical = HistoricalAnalyzer(db)
+        self.scorer = MarketScorer(db)
 
     async def start(self):
         """Start the bot."""
@@ -65,6 +67,14 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("history", self.cmd_history))
         self.application.add_handler(CommandHandler("chart", self.cmd_chart))
 
+        # Scoring & Accuracy
+        self.application.add_handler(CommandHandler("top", self.cmd_top))
+        self.application.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
+        self.application.add_handler(CommandHandler("score", self.cmd_score))
+
+        # Utility commands
+        self.application.add_handler(CommandHandler("getid", self.cmd_getid))
+
         # Initialize and start
         await self.application.initialize()
         await self.application.start()
@@ -73,14 +83,18 @@ class TelegramBot:
         # Set bot commands for menu
         commands = [
             BotCommand("markets", "Top markets by volume"),
+            BotCommand("top", "Top 10 markets by score"),
             BotCommand("search", "Search markets"),
             BotCommand("price", "Get market price"),
+            BotCommand("score", "Get market score"),
+            BotCommand("getid", "Get market ID from URL"),
             BotCommand("watch", "Add to watchlist"),
             BotCommand("watchlist", "View watchlist"),
             BotCommand("portfolio", "View positions"),
             BotCommand("pnl", "P&L summary"),
             BotCommand("history", "Price history"),
             BotCommand("chart", "Price chart"),
+            BotCommand("accuracy", "Signal accuracy stats"),
             BotCommand("stats", "Alert statistics"),
             BotCommand("status", "Bot status"),
             BotCommand("help", "Show all commands"),
@@ -133,8 +147,11 @@ Use /help to see all available commands."""
 
 <b>Market Info:</b>
 /markets - Top 10 markets by activity
+/top - Top 10 markets by score
 /search &lt;query&gt; - Search markets
 /price &lt;market_id&gt; - Get price for a market
+/score &lt;market_id&gt; - Get score breakdown
+/getid &lt;url&gt; - Get market ID from Polymarket URL
 
 <b>Watchlist:</b>
 /watch &lt;market_id&gt; - Add to watchlist
@@ -150,6 +167,7 @@ Use /help to see all available commands."""
 <b>Analysis:</b>
 /history &lt;market_id&gt; - Price history &amp; stats
 /chart &lt;market_id&gt; - Mini price chart
+/accuracy - Signal accuracy stats
 
 <b>Stats:</b>
 /stats - Alert statistics
@@ -182,10 +200,10 @@ Use /help to see all available commands."""
 
                 text += f"{i}. <b>{m.question[:50]}{'...' if len(m.question) > 50 else ''}</b>\n"
                 text += f"   Yes: ${yes_price:.2f} | Vol: ${vol:,.0f}\n"
+                text += f"   ID: <code>{m.id}</code>"
                 if link:
-                    text += f"   <a href='{link}'>Open</a>\n\n"
-                else:
-                    text += f"   ID: <code>{m.id}</code>\n\n"
+                    text += f" | <a href='{link}'>Open</a>"
+                text += "\n\n"
 
             await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -210,12 +228,12 @@ Use /help to see all available commands."""
 
             text = f"<b>Search Results for '{query}'</b>\n\n"
             for i, m in enumerate(markets, 1):
-                link = f"https://polymarket.com/event/{m.slug}" if m.slug else None
+                link = f"https://polymarket.com/event/{m.event_id}" if m.event_id else None
                 text += f"{i}. <b>{m.question[:60]}{'...' if len(m.question) > 60 else ''}</b>\n"
+                text += f"   ID: <code>{m.id}</code>"
                 if link:
-                    text += f"   <a href='{link}'>View on Polymarket</a>\n\n"
-                else:
-                    text += f"   ID: <code>{m.id}</code>\n\n"
+                    text += f" | <a href='{link}'>Open</a>"
+                text += "\n\n"
 
             await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -255,7 +273,7 @@ Use /help to see all available commands."""
             if await self.db.is_in_watchlist(chat_id, market_id):
                 text += "\n\nIn your watchlist"
 
-            link = f"https://polymarket.com/event/{market.slug}" if market.slug else None
+            link = f"https://polymarket.com/event/{market.event_id}" if market.event_id else None
             if link:
                 text += f"\n\n<a href='{link}'>View on Polymarket</a>"
 
@@ -332,7 +350,7 @@ Use /help to see all available commands."""
                     # Get latest price
                     price = await self.db.get_latest_price_snapshot(item.market_id)
                     price_str = f"${price.yes_price:.2f}" if price else "N/A"
-                    link = f"https://polymarket.com/event/{market.slug}" if market.slug else None
+                    link = f"https://polymarket.com/event/{market.event_id}" if market.event_id else None
 
                     text += f"{i}. <b>{market.question[:45]}...</b>\n"
                     text += f"   Yes: {price_str}"
@@ -659,3 +677,191 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error generating chart: {e}")
+
+    async def cmd_getid(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /getid command - get market ID from Polymarket URL."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /getid <polymarket_url>\n"
+                "Example: /getid https://polymarket.com/event/will-trump-win"
+            )
+            return
+
+        url = context.args[0]
+
+        # Extract slug from URL
+        # Supports formats:
+        # - https://polymarket.com/event/slug
+        # - https://polymarket.com/event/slug/sub-market
+        import re
+        match = re.search(r'polymarket\.com/event/([^/?]+)', url)
+
+        if not match:
+            await update.message.reply_text(
+                "Invalid Polymarket URL.\n"
+                "Expected format: https://polymarket.com/event/..."
+            )
+            return
+
+        slug = match.group(1)
+
+        try:
+            # Search for market by slug
+            market = await self.db.get_market_by_slug(slug)
+
+            if not market:
+                # Try searching by slug in all markets
+                markets = await self.db.search_markets(slug, limit=5)
+                if markets:
+                    text = f"<b>Markets matching '{slug}':</b>\n\n"
+                    for m in markets:
+                        text += f"• <b>{m.question[:50]}...</b>\n"
+                        text += f"  ID: <code>{m.id}</code>\n\n"
+                    await update.message.reply_text(text, parse_mode="HTML")
+                else:
+                    await update.message.reply_text(
+                        f"Market not found for slug: {slug}\n"
+                        "The market might not be tracked yet."
+                    )
+                return
+
+            text = f"<b>Market Found:</b>\n\n"
+            text += f"<b>{market.question}</b>\n\n"
+            text += f"<b>Market ID:</b> <code>{market.id}</code>\n"
+            text += f"\nYou can now use this ID with other commands:\n"
+            text += f"• /price {market.id}\n"
+            text += f"• /watch {market.id}\n"
+            text += f"• /history {market.id}"
+
+            await update.message.reply_text(text, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error looking up market: {e}")
+
+    # Scoring & Accuracy commands
+    async def cmd_top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /top command - show top 10 markets by score."""
+        await update.message.reply_text("Fetching top scored markets...")
+
+        try:
+            top_markets = await self.scorer.get_top_markets(limit=10)
+
+            if not top_markets:
+                await update.message.reply_text("No scored markets found yet.")
+                return
+
+            text = "<b>Top 10 Markets by Score</b>\n\n"
+            for i, result in enumerate(top_markets, 1):
+                # Truncate question
+                q = result.question[:45] + "..." if len(result.question) > 45 else result.question
+
+                # Format change
+                if result.score_change is not None and result.score_change != 0:
+                    if result.score_change > 0:
+                        change_str = f" (+{result.score_change:.0f})"
+                    else:
+                        change_str = f" ({result.score_change:.0f})"
+                else:
+                    change_str = ""
+
+                link = result.polymarket_url
+
+                text += f"{i}. <b>{q}</b>\n"
+                text += f"   Score: {result.total_score:.0f}/100{change_str}\n"
+                if link:
+                    text += f"   <a href='{link}'>Open</a> | "
+                text += f"ID: <code>{result.market_id}</code>\n\n"
+
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching top markets: {e}")
+
+    async def cmd_accuracy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /accuracy command - show signal accuracy stats."""
+        try:
+            stats = await self.db.get_accuracy_stats()
+
+            overall_pct = stats.get('overall_accuracy_pct', 0)
+            total = stats.get('total_evaluated', 0)
+            profitable = stats.get('total_profitable', 0)
+            avg_profit = stats.get('avg_profit_pct', 0)
+
+            # Choose emoji based on accuracy
+            if overall_pct >= 60:
+                emoji = ""
+            elif overall_pct >= 40:
+                emoji = ""
+            else:
+                emoji = ""
+
+            text = f"{emoji} <b>Signal Accuracy Stats</b>\n\n"
+            text += f"<b>Overall Accuracy:</b> {overall_pct:.1f}%\n"
+            text += f"<b>Total Evaluated:</b> {total}\n"
+            text += f"<b>Profitable:</b> {profitable}\n"
+            text += f"<b>Avg Profit:</b> {avg_profit:+.1f}%\n\n"
+
+            # By type breakdown
+            by_type = stats.get('by_type', {})
+            if any(t.get('total', 0) > 0 for t in by_type.values()):
+                text += "<b>By Alert Type:</b>\n"
+                for alert_type, type_stats in by_type.items():
+                    if type_stats.get('total', 0) > 0:
+                        type_name = alert_type.replace('_', ' ').title()
+                        type_pct = type_stats.get('accuracy_pct', 0)
+                        type_total = type_stats.get('total', 0)
+                        text += f"  {type_name}: {type_pct:.0f}% ({type_total} signals)\n"
+            else:
+                text += "<i>No signals evaluated yet. Check back after 24h.</i>"
+
+            await update.message.reply_text(text, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching accuracy: {e}")
+
+    async def cmd_score(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /score command - get score breakdown for a market."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /score <market_id>\n"
+                "Get market ID from /markets or /search"
+            )
+            return
+
+        market_id = context.args[0]
+
+        try:
+            result = await self.scorer.get_market_score(market_id)
+
+            if not result:
+                await update.message.reply_text(f"No score found for market {market_id}")
+                return
+
+            # Truncate question
+            q = result.question[:80] + "..." if len(result.question) > 80 else result.question
+
+            text = f"<b>{q}</b>\n\n"
+            text += f"<b>Total Score:</b> {result.total_score:.0f}/100\n"
+
+            if result.score_change is not None:
+                if result.score_change > 0:
+                    text += f"<b>Change:</b> +{result.score_change:.0f} points\n"
+                elif result.score_change < 0:
+                    text += f"<b>Change:</b> {result.score_change:.0f} points\n"
+
+            text += "\n<b>Score Breakdown:</b>\n"
+            text += f"  Volume (25%): {result.volume_score:.0f}\n"
+            text += f"  Vol Trend (15%): {result.volume_trend_score:.0f}\n"
+            text += f"  Liquidity (20%): {result.liquidity_score:.0f}\n"
+            text += f"  Volatility (15%): {result.volatility_score:.0f}\n"
+            text += f"  Spread (15%): {result.spread_score:.0f}\n"
+            text += f"  Activity (10%): {result.activity_score:.0f}\n"
+
+            link = result.polymarket_url
+            if link:
+                text += f"\n<a href='{link}'>View on Polymarket</a>"
+
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching score: {e}")

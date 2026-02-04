@@ -9,6 +9,8 @@ from .new_market import NewMarketAnalyzer, NewMarket
 from .resolution import ResolutionAnalyzer, ResolutionAlert
 from .liquidity import LiquidityAnalyzer, LiquidityChange
 from .historical import HistoricalAnalyzer, PriceHistory, BacktestResult
+from .accuracy import AccuracyTracker, AccuracyResult
+from .scoring import MarketScorer, MarketScoreResult, ScoreSpikeAlert
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -30,4 +32,9 @@ __all__ = [
     "HistoricalAnalyzer",
     "PriceHistory",
     "BacktestResult",
+    "AccuracyTracker",
+    "AccuracyResult",
+    "MarketScorer",
+    "MarketScoreResult",
+    "ScoreSpikeAlert",
 ]
