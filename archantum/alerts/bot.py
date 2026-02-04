@@ -704,36 +704,75 @@ Use /help to see all available commands."""
             return
 
         slug = match.group(1)
+        await update.message.reply_text(f"Looking up event: {slug}...")
 
         try:
-            # Search for market by slug
-            market = await self.db.get_market_by_slug(slug)
+            # First try database - search by event_id (multiple markets can have same event)
+            markets_by_event = await self.db.get_markets_by_event_id(slug)
 
-            if not market:
-                # Try searching by slug in all markets
-                markets = await self.db.search_markets(slug, limit=5)
-                if markets:
-                    text = f"<b>Markets matching '{slug}':</b>\n\n"
-                    for m in markets:
-                        text += f"• <b>{m.question[:50]}...</b>\n"
-                        text += f"  ID: <code>{m.id}</code>\n\n"
-                    await update.message.reply_text(text, parse_mode="HTML")
-                else:
-                    await update.message.reply_text(
-                        f"Market not found for slug: {slug}\n"
-                        "The market might not be tracked yet."
-                    )
+            if markets_by_event:
+                text = f"<b>Markets for event '{slug}':</b>\n\n"
+                for m in markets_by_event[:10]:  # Limit to 10
+                    text += f"• <b>{m.question[:50]}{'...' if len(m.question) > 50 else ''}</b>\n"
+                    text += f"  ID: <code>{m.id}</code>\n\n"
+                await update.message.reply_text(text, parse_mode="HTML")
                 return
 
-            text = f"<b>Market Found:</b>\n\n"
-            text += f"<b>{market.question}</b>\n\n"
-            text += f"<b>Market ID:</b> <code>{market.id}</code>\n"
-            text += f"\nYou can now use this ID with other commands:\n"
-            text += f"• /price {market.id}\n"
-            text += f"• /watch {market.id}\n"
-            text += f"• /history {market.id}"
+            # Try exact slug match
+            market = await self.db.get_market_by_slug(slug)
+            if market:
+                text = f"<b>Market Found:</b>\n\n"
+                text += f"<b>{market.question}</b>\n\n"
+                text += f"<b>Market ID:</b> <code>{market.id}</code>\n"
+                text += f"\nYou can now use this ID with other commands:\n"
+                text += f"• /price {market.id}\n"
+                text += f"• /watch {market.id}\n"
+                text += f"• /history {market.id}"
+                await update.message.reply_text(text, parse_mode="HTML")
+                return
 
-            await update.message.reply_text(text, parse_mode="HTML")
+            # Not in database - try fetching from API
+            async with GammaClient() as client:
+                # Fetch markets and look for matching event slug
+                api_markets = await client.get_markets(limit=100)
+                matching = []
+
+                for m in api_markets:
+                    # Check if this market belongs to the event
+                    if m.events:
+                        for event in m.events:
+                            if event.get('slug') == slug:
+                                matching.append(m)
+                                break
+                    # Also check market slug
+                    if m.slug == slug:
+                        matching.append(m)
+
+                if matching:
+                    # Save to database for future lookups
+                    await self.db.upsert_markets(matching)
+
+                    text = f"<b>Markets found for '{slug}':</b>\n\n"
+                    for m in matching[:10]:
+                        text += f"• <b>{m.question[:50]}{'...' if len(m.question) > 50 else ''}</b>\n"
+                        text += f"  ID: <code>{m.id}</code>\n\n"
+                    text += "<i>Markets added to tracking.</i>"
+                    await update.message.reply_text(text, parse_mode="HTML")
+                    return
+
+            # Still not found - try text search as last resort
+            markets = await self.db.search_markets(slug.replace('-', ' '), limit=5)
+            if markets:
+                text = f"<b>Similar markets for '{slug}':</b>\n\n"
+                for m in markets:
+                    text += f"• <b>{m.question[:50]}...</b>\n"
+                    text += f"  ID: <code>{m.id}</code>\n\n"
+                await update.message.reply_text(text, parse_mode="HTML")
+            else:
+                await update.message.reply_text(
+                    f"Market not found for: {slug}\n"
+                    "Try /search with keywords from the market name."
+                )
 
         except Exception as e:
             await update.message.reply_text(f"Error looking up market: {e}")
