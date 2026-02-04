@@ -44,9 +44,6 @@ class Settings(BaseSettings):
     # Accuracy tracking
     accuracy_eval_hours: int = Field(default=24, description="Hours before evaluating alert accuracy")
 
-    # Market scoring
-    score_spike_threshold: float = Field(default=15.0, description="Score points increase to trigger alert")
-
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

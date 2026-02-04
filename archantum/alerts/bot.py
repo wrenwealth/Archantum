@@ -18,7 +18,6 @@ from archantum.config import settings
 from archantum.db import Database
 from archantum.api import GammaClient
 from archantum.analysis.historical import HistoricalAnalyzer
-from archantum.analysis.scoring import MarketScorer
 
 
 console = Console()
@@ -31,7 +30,6 @@ class TelegramBot:
         self.db = db
         self.application: Application | None = None
         self.historical = HistoricalAnalyzer(db)
-        self.scorer = MarketScorer(db)
 
     async def start(self):
         """Start the bot."""
@@ -67,10 +65,8 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("history", self.cmd_history))
         self.application.add_handler(CommandHandler("chart", self.cmd_chart))
 
-        # Scoring & Accuracy
-        self.application.add_handler(CommandHandler("top", self.cmd_top))
+        # Accuracy tracking
         self.application.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
-        self.application.add_handler(CommandHandler("score", self.cmd_score))
 
         # Utility commands
         self.application.add_handler(CommandHandler("getid", self.cmd_getid))
@@ -83,10 +79,8 @@ class TelegramBot:
         # Set bot commands for menu
         commands = [
             BotCommand("markets", "Top markets by volume"),
-            BotCommand("top", "Top 10 markets by score"),
             BotCommand("search", "Search markets"),
             BotCommand("price", "Get market price"),
-            BotCommand("score", "Get market score"),
             BotCommand("getid", "Get market ID from URL"),
             BotCommand("watch", "Add to watchlist"),
             BotCommand("watchlist", "View watchlist"),
@@ -147,10 +141,8 @@ Use /help to see all available commands."""
 
 <b>Market Info:</b>
 /markets - Top 10 markets by activity
-/top - Top 10 markets by score
 /search &lt;query&gt; - Search markets
 /price &lt;market_id&gt; - Get price for a market
-/score &lt;market_id&gt; - Get score breakdown
 /getid &lt;url&gt; - Get market ID from Polymarket URL
 
 <b>Watchlist:</b>
@@ -751,45 +743,6 @@ Use /help to see all available commands."""
         except Exception as e:
             await update.message.reply_text(f"Error looking up market: {e}")
 
-    # Scoring & Accuracy commands
-    async def cmd_top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /top command - show top 10 markets by score."""
-        await update.message.reply_text("Fetching top scored markets...")
-
-        try:
-            top_markets = await self.scorer.get_top_markets(limit=10)
-
-            if not top_markets:
-                await update.message.reply_text("No scored markets found yet.")
-                return
-
-            text = "<b>Top 10 Markets by Score</b>\n\n"
-            for i, result in enumerate(top_markets, 1):
-                # Truncate question
-                q = result.question[:45] + "..." if len(result.question) > 45 else result.question
-
-                # Format change
-                if result.score_change is not None and result.score_change != 0:
-                    if result.score_change > 0:
-                        change_str = f" (+{result.score_change:.0f})"
-                    else:
-                        change_str = f" ({result.score_change:.0f})"
-                else:
-                    change_str = ""
-
-                link = result.polymarket_url
-
-                text += f"{i}. <b>{q}</b>\n"
-                text += f"   Score: {result.total_score:.0f}/100{change_str}\n"
-                if link:
-                    text += f"   <a href='{link}'>Open</a> | "
-                text += f"ID: <code>{result.market_id}</code>\n\n"
-
-            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
-
-        except Exception as e:
-            await update.message.reply_text(f"Error fetching top markets: {e}")
-
     async def cmd_accuracy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /accuracy command - show signal accuracy stats."""
         try:
@@ -831,50 +784,3 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error fetching accuracy: {e}")
-
-    async def cmd_score(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /score command - get score breakdown for a market."""
-        if not context.args:
-            await update.message.reply_text(
-                "Usage: /score <market_id>\n"
-                "Get market ID from /markets or /search"
-            )
-            return
-
-        market_id = context.args[0]
-
-        try:
-            result = await self.scorer.get_market_score(market_id)
-
-            if not result:
-                await update.message.reply_text(f"No score found for market {market_id}")
-                return
-
-            # Truncate question
-            q = result.question[:80] + "..." if len(result.question) > 80 else result.question
-
-            text = f"<b>{q}</b>\n\n"
-            text += f"<b>Total Score:</b> {result.total_score:.0f}/100\n"
-
-            if result.score_change is not None:
-                if result.score_change > 0:
-                    text += f"<b>Change:</b> +{result.score_change:.0f} points\n"
-                elif result.score_change < 0:
-                    text += f"<b>Change:</b> {result.score_change:.0f} points\n"
-
-            text += "\n<b>Score Breakdown:</b>\n"
-            text += f"  Volume (25%): {result.volume_score:.0f}\n"
-            text += f"  Vol Trend (15%): {result.volume_trend_score:.0f}\n"
-            text += f"  Liquidity (20%): {result.liquidity_score:.0f}\n"
-            text += f"  Volatility (15%): {result.volatility_score:.0f}\n"
-            text += f"  Spread (15%): {result.spread_score:.0f}\n"
-            text += f"  Activity (10%): {result.activity_score:.0f}\n"
-
-            link = result.polymarket_url
-            if link:
-                text += f"\n<a href='{link}'>View on Polymarket</a>"
-
-            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
-
-        except Exception as e:
-            await update.message.reply_text(f"Error fetching score: {e}")
