@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
-from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert
+from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position
 from archantum.api.gamma import GammaMarket
 from archantum.api.clob import PriceData
 
@@ -233,3 +233,282 @@ class Database:
                 query = query.where(Market.active == True, Market.closed == False)
             result = await session.execute(query)
             return result.scalar_one() or 0
+
+    # Watchlist operations
+    async def add_to_watchlist(self, chat_id: str, market_id: str, notes: str | None = None) -> Watchlist | None:
+        """Add a market to user's watchlist."""
+        async with self.async_session() as session:
+            # Check if already exists
+            result = await session.execute(
+                select(Watchlist)
+                .where(Watchlist.chat_id == chat_id, Watchlist.market_id == market_id)
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                return None  # Already in watchlist
+
+            watchlist_item = Watchlist(
+                chat_id=chat_id,
+                market_id=market_id,
+                notes=notes,
+            )
+            session.add(watchlist_item)
+            await session.commit()
+            await session.refresh(watchlist_item)
+            return watchlist_item
+
+    async def remove_from_watchlist(self, chat_id: str, market_id: str) -> bool:
+        """Remove a market from user's watchlist."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Watchlist)
+                .where(Watchlist.chat_id == chat_id, Watchlist.market_id == market_id)
+            )
+            item = result.scalar_one_or_none()
+            if item:
+                await session.delete(item)
+                await session.commit()
+                return True
+            return False
+
+    async def get_watchlist(self, chat_id: str) -> list[Watchlist]:
+        """Get user's watchlist."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Watchlist)
+                .where(Watchlist.chat_id == chat_id)
+                .order_by(Watchlist.added_at.desc())
+            )
+            return list(result.scalars().all())
+
+    async def is_in_watchlist(self, chat_id: str, market_id: str) -> bool:
+        """Check if market is in user's watchlist."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Watchlist)
+                .where(Watchlist.chat_id == chat_id, Watchlist.market_id == market_id)
+            )
+            return result.scalar_one_or_none() is not None
+
+    async def search_markets(self, query: str, limit: int = 10) -> list[Market]:
+        """Search markets by question text."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Market)
+                .where(Market.question.ilike(f"%{query}%"))
+                .where(Market.active == True, Market.closed == False)
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def get_top_markets_by_volume(self, limit: int = 10) -> list[tuple[Market, PriceSnapshot | None]]:
+        """Get top markets with their latest prices."""
+        async with self.async_session() as session:
+            # Get markets
+            result = await session.execute(
+                select(Market)
+                .where(Market.active == True, Market.closed == False)
+                .limit(limit)
+            )
+            markets = list(result.scalars().all())
+
+            # Get latest price for each market
+            market_prices = []
+            for market in markets:
+                price_result = await session.execute(
+                    select(PriceSnapshot)
+                    .where(PriceSnapshot.market_id == market.id)
+                    .order_by(PriceSnapshot.timestamp.desc())
+                    .limit(1)
+                )
+                price = price_result.scalar_one_or_none()
+                market_prices.append((market, price))
+
+            return market_prices
+
+    async def get_alert_stats(self, chat_id: str | None = None) -> dict[str, int]:
+        """Get alert statistics."""
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = datetime.utcnow() - timedelta(days=7)
+
+        async with self.async_session() as session:
+            # Today's alerts
+            today_result = await session.execute(
+                select(func.count(Alert.id))
+                .where(Alert.timestamp >= today_start)
+            )
+            today_count = today_result.scalar_one() or 0
+
+            # This week's alerts
+            week_result = await session.execute(
+                select(func.count(Alert.id))
+                .where(Alert.timestamp >= week_start)
+            )
+            week_count = week_result.scalar_one() or 0
+
+            # By type today
+            type_counts = {}
+            for alert_type in ['arbitrage', 'volume_spike', 'price_move']:
+                type_result = await session.execute(
+                    select(func.count(Alert.id))
+                    .where(Alert.timestamp >= today_start)
+                    .where(Alert.alert_type == alert_type)
+                )
+                type_counts[alert_type] = type_result.scalar_one() or 0
+
+            return {
+                'today': today_count,
+                'this_week': week_count,
+                **type_counts
+            }
+
+    # Portfolio operations
+    async def add_position(
+        self,
+        chat_id: str,
+        market_id: str,
+        outcome: str,
+        shares: float,
+        price: float,
+    ) -> Position:
+        """Add or update a position."""
+        async with self.async_session() as session:
+            # Check for existing position
+            result = await session.execute(
+                select(Position)
+                .where(
+                    Position.chat_id == chat_id,
+                    Position.market_id == market_id,
+                    Position.outcome == outcome.lower(),
+                )
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Update existing position (average in)
+                new_total_shares = existing.shares + shares
+                new_total_cost = existing.total_cost + (shares * price)
+                existing.shares = new_total_shares
+                existing.total_cost = new_total_cost
+                existing.avg_price = new_total_cost / new_total_shares
+                await session.commit()
+                await session.refresh(existing)
+                return existing
+            else:
+                # Create new position
+                position = Position(
+                    chat_id=chat_id,
+                    market_id=market_id,
+                    outcome=outcome.lower(),
+                    shares=shares,
+                    avg_price=price,
+                    total_cost=shares * price,
+                )
+                session.add(position)
+                await session.commit()
+                await session.refresh(position)
+                return position
+
+    async def close_position(
+        self,
+        chat_id: str,
+        market_id: str,
+        outcome: str,
+        shares: float | None = None,
+    ) -> bool:
+        """Close (sell) a position partially or fully."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Position)
+                .where(
+                    Position.chat_id == chat_id,
+                    Position.market_id == market_id,
+                    Position.outcome == outcome.lower(),
+                )
+            )
+            position = result.scalar_one_or_none()
+
+            if not position:
+                return False
+
+            if shares is None or shares >= position.shares:
+                # Close entire position
+                await session.delete(position)
+            else:
+                # Partial close
+                position.shares -= shares
+                position.total_cost = position.shares * position.avg_price
+
+            await session.commit()
+            return True
+
+    async def get_positions(self, chat_id: str) -> list[Position]:
+        """Get all positions for a user."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Position)
+                .where(Position.chat_id == chat_id)
+                .order_by(Position.created_at.desc())
+            )
+            return list(result.scalars().all())
+
+    async def get_position(self, chat_id: str, market_id: str, outcome: str) -> Position | None:
+        """Get a specific position."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Position)
+                .where(
+                    Position.chat_id == chat_id,
+                    Position.market_id == market_id,
+                    Position.outcome == outcome.lower(),
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def calculate_portfolio_pnl(self, chat_id: str) -> dict[str, Any]:
+        """Calculate portfolio P&L."""
+        positions = await self.get_positions(chat_id)
+
+        total_cost = 0.0
+        total_value = 0.0
+        position_details = []
+
+        for pos in positions:
+            # Get current price
+            price_snapshot = await self.get_latest_price_snapshot(pos.market_id)
+            market = await self.get_market(pos.market_id)
+
+            if price_snapshot and market:
+                current_price = price_snapshot.yes_price if pos.outcome == 'yes' else price_snapshot.no_price
+                current_price = current_price or 0
+
+                current_value = pos.shares * current_price
+                pnl = current_value - pos.total_cost
+                pnl_pct = (pnl / pos.total_cost * 100) if pos.total_cost > 0 else 0
+
+                total_cost += pos.total_cost
+                total_value += current_value
+
+                position_details.append({
+                    'market_id': pos.market_id,
+                    'question': market.question,
+                    'outcome': pos.outcome,
+                    'shares': pos.shares,
+                    'avg_price': pos.avg_price,
+                    'current_price': current_price,
+                    'cost': pos.total_cost,
+                    'value': current_value,
+                    'pnl': pnl,
+                    'pnl_pct': pnl_pct,
+                })
+
+        total_pnl = total_value - total_cost
+        total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+
+        return {
+            'total_cost': total_cost,
+            'total_value': total_value,
+            'total_pnl': total_pnl,
+            'total_pnl_pct': total_pnl_pct,
+            'positions': position_details,
+        }

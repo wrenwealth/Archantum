@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  archantum:
+    build: .
+    container_name: archantum
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - archantum_data:/data
+    environment:
+      - DATABASE_PATH=/data/archantum.db
+    healthcheck:
+      test: ["CMD", "python", "-m", "archantum", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  archantum_data:

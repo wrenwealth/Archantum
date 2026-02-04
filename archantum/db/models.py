@@ -94,3 +94,37 @@ class Alert(Base):
 
     # Relationship
     market = relationship("Market", back_populates="alerts")
+
+
+class Watchlist(Base):
+    """User watchlist table."""
+
+    __tablename__ = "watchlist"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String, nullable=False)  # Telegram chat ID
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    notes = Column(Text, nullable=True)
+
+    # Relationship
+    market = relationship("Market")
+
+
+class Position(Base):
+    """User positions/portfolio table."""
+
+    __tablename__ = "positions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String, nullable=False)  # Telegram chat ID
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+    outcome = Column(String, nullable=False)  # 'yes' or 'no'
+    shares = Column(Float, nullable=False)  # Number of shares
+    avg_price = Column(Float, nullable=False)  # Average entry price
+    total_cost = Column(Float, nullable=False)  # Total cost basis
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship
+    market = relationship("Market")
