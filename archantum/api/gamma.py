@@ -210,3 +210,47 @@ class GammaClient:
         response = await self.client.get("/events", params=params)
         response.raise_for_status()
         return response.json()
+
+    async def get_event_by_slug(self, slug: str) -> dict[str, Any] | None:
+        """Fetch a specific event by its slug."""
+        try:
+            response = await self.client.get("/events", params={"slug": slug})
+            response.raise_for_status()
+            events = response.json()
+            if events and len(events) > 0:
+                return events[0]
+            return None
+        except httpx.HTTPStatusError:
+            return None
+
+    async def get_markets_by_event_slug(self, event_slug: str) -> list[GammaMarket]:
+        """Fetch all markets for a specific event."""
+        event = await self.get_event_by_slug(event_slug)
+        if not event:
+            return []
+
+        # Extract markets from event and add event info to each market
+        markets_data = event.get("markets", [])
+        event_info = {"slug": event.get("slug"), "title": event.get("title")}
+
+        markets = []
+        for m in markets_data:
+            # Add events array so polymarket_url works correctly
+            m["events"] = [event_info]
+            markets.append(GammaMarket.model_validate(m))
+
+        return markets
+
+    async def search_markets(self, query: str, limit: int = 20) -> list[GammaMarket]:
+        """Search markets by text query."""
+        # Gamma API doesn't have a search endpoint, so we fetch and filter
+        all_markets = await self.get_markets(limit=500)
+        query_lower = query.lower()
+
+        matching = [
+            m for m in all_markets
+            if query_lower in m.question.lower()
+            or (m.slug and query_lower in m.slug.lower())
+        ]
+
+        return matching[:limit]
