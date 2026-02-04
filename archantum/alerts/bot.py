@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from telegram import Update, Bot
+from telegram import Update, Bot, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -69,6 +69,23 @@ class TelegramBot:
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling(drop_pending_updates=True)
+
+        # Set bot commands for menu
+        commands = [
+            BotCommand("markets", "Top markets by volume"),
+            BotCommand("search", "Search markets"),
+            BotCommand("price", "Get market price"),
+            BotCommand("watch", "Add to watchlist"),
+            BotCommand("watchlist", "View watchlist"),
+            BotCommand("portfolio", "View positions"),
+            BotCommand("pnl", "P&L summary"),
+            BotCommand("history", "Price history"),
+            BotCommand("chart", "Price chart"),
+            BotCommand("stats", "Alert statistics"),
+            BotCommand("status", "Bot status"),
+            BotCommand("help", "Show all commands"),
+        ]
+        await self.application.bot.set_my_commands(commands)
 
         console.print("[green]Telegram bot started[/green]")
 
