@@ -158,30 +158,3 @@ class AlertOutcome(Base):
     # Relationships
     alert = relationship("Alert")
     market = relationship("Market")
-
-
-class MarketScore(Base):
-    """Market scoring for ranking and spike detection."""
-
-    __tablename__ = "market_scores"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
-
-    # Component scores (0-100)
-    volume_score = Column(Float, nullable=False)        # 25% weight
-    volume_trend_score = Column(Float, nullable=False)  # 15% weight
-    liquidity_score = Column(Float, nullable=False)     # 20% weight
-    volatility_score = Column(Float, nullable=False)    # 15% weight
-    spread_score = Column(Float, nullable=False)        # 15% weight
-    activity_score = Column(Float, nullable=False)      # 10% weight
-
-    # Composite
-    total_score = Column(Float, nullable=False)
-    previous_score = Column(Float, nullable=True)
-    score_change = Column(Float, nullable=True)
-
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-    # Relationship
-    market = relationship("Market")

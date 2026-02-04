@@ -17,8 +17,6 @@ from archantum.analysis.trends import TrendSignal
 from archantum.analysis.whale import WhaleActivity
 from archantum.analysis.new_market import NewMarket
 from archantum.analysis.resolution import ResolutionAlert
-from archantum.analysis.liquidity import LiquidityChange
-from archantum.analysis.scoring import ScoreSpikeAlert
 from archantum.analysis.accuracy import AccuracyTracker
 
 
@@ -326,66 +324,6 @@ class TelegramAlerter:
             alert_type="resolution",
             message=message,
             details=resolution.to_dict(),
-        )
-
-    def format_liquidity_alert(self, change: LiquidityChange) -> AlertMessage:
-        """Format a liquidity change as an alert."""
-        if change.direction == "added":
-            emoji = "💧"
-            action = "LIQUIDITY ADDED"
-        else:
-            emoji = "🚰"
-            action = "LIQUIDITY REMOVED"
-
-        link = change.polymarket_url or "N/A"
-
-        message = f"""{emoji} <b>{action}</b>
-
-<b>Market:</b> {change.question[:100]}...
-
-<b>Change:</b> ${change.change_amount:,.0f} ({change.change_pct:.1f}%)
-<b>Previous:</b> ${change.previous_liquidity:,.0f}
-<b>Current:</b> ${change.current_liquidity:,.0f}
-
-<b>Link:</b> {link}"""
-
-        return AlertMessage(
-            market_id=change.market_id,
-            alert_type="liquidity",
-            message=message,
-            details=change.to_dict(),
-        )
-
-    def format_score_spike_alert(self, spike: ScoreSpikeAlert) -> AlertMessage:
-        """Format a score spike as an alert."""
-        emoji = "📊"
-        link = spike.polymarket_url or "N/A"
-
-        # Determine change emoji
-        if spike.score_change >= 25:
-            change_emoji = "🚀"
-        elif spike.score_change >= 20:
-            change_emoji = "📈"
-        else:
-            change_emoji = "⬆️"
-
-        message = f"""{emoji} <b>MARKET SCORE SPIKE</b>
-
-<b>Market:</b> {spike.question[:100]}...
-
-<b>Previous:</b> {spike.previous_score:.0f}/100
-<b>Current:</b> {spike.current_score:.0f}/100
-<b>Change:</b> {change_emoji} +{spike.score_change:.0f} points
-
-<b>Top Factor:</b> {spike.top_factor}
-
-<b>Link:</b> {link}"""
-
-        return AlertMessage(
-            market_id=spike.market_id,
-            alert_type="score_spike",
-            message=message,
-            details=spike.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:
