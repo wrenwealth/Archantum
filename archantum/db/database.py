@@ -872,3 +872,11 @@ class Database:
                 .limit(1)
             )
             return result.scalar_one_or_none()
+
+    async def get_markets_by_event_id(self, event_id: str) -> list[Market]:
+        """Get all markets for a given event_id (event slug)."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Market).where(Market.event_id == event_id)
+            )
+            return list(result.scalars().all())
