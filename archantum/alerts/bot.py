@@ -161,12 +161,12 @@ Use /help to see all available commands."""
                 vol = m.volume_24hr or 0
                 prices = m.outcome_prices or []
                 yes_price = float(prices[0]) if prices else 0
-                link = f"https://polymarket.com/event/{m.slug}" if m.slug else None
+                link = m.polymarket_url
 
                 text += f"{i}. <b>{m.question[:50]}{'...' if len(m.question) > 50 else ''}</b>\n"
                 text += f"   Yes: ${yes_price:.2f} | Vol: ${vol:,.0f}\n"
                 if link:
-                    text += f"   <a href='{link}'>View on Polymarket</a>\n\n"
+                    text += f"   <a href='{link}'>Open</a>\n\n"
                 else:
                     text += f"   ID: <code>{m.id}</code>\n\n"
 
