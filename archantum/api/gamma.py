@@ -30,6 +30,7 @@ class GammaMarket(BaseModel):
     closed: bool = False
     clob_token_ids: list[str] | None = Field(default=None, alias="clobTokenIds")
     end_date: str | None = Field(default=None, alias="endDate")
+    events: list[dict[str, Any]] | None = None
 
     @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
     @classmethod
@@ -62,6 +63,19 @@ class GammaMarket(BaseModel):
                 return self.clob_token_ids[idx]
             except (ValueError, IndexError):
                 pass
+        return None
+
+    @property
+    def polymarket_url(self) -> str | None:
+        """Get the Polymarket URL for this market."""
+        # Use event slug if available (most accurate)
+        if self.events and len(self.events) > 0:
+            event_slug = self.events[0].get("slug")
+            if event_slug:
+                return f"https://polymarket.com/event/{event_slug}"
+        # Fallback to market slug
+        if self.slug:
+            return f"https://polymarket.com/event/{self.slug}"
         return None
 
 
