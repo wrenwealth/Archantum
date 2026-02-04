@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
-from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position
+from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, MarketScore
 from archantum.api.gamma import GammaMarket
 from archantum.api.clob import PriceData
 
@@ -36,6 +36,13 @@ class Database:
 
     async def upsert_market(self, gamma_market: GammaMarket) -> Market:
         """Insert or update a market."""
+        # Extract event slug from events list (this is the correct slug for URLs)
+        event_slug = None
+        if gamma_market.events and len(gamma_market.events) > 0:
+            event_slug = gamma_market.events[0].get("slug")
+        if not event_slug:
+            event_slug = gamma_market.event_slug
+
         async with self.async_session() as session:
             result = await session.execute(
                 select(Market).where(Market.id == gamma_market.id)
@@ -51,13 +58,16 @@ class Database:
                 market.active = gamma_market.active
                 market.closed = gamma_market.closed
                 market.updated_at = datetime.utcnow()
+                # Always update event_id if we have a better one
+                if event_slug:
+                    market.event_id = event_slug
             else:
                 market = Market(
                     id=gamma_market.id,
                     condition_id=gamma_market.condition_id,
                     question=gamma_market.question,
                     slug=gamma_market.slug,
-                    event_id=gamma_market.event_slug,
+                    event_id=event_slug,
                     outcome_yes_token=gamma_market.yes_token_id,
                     outcome_no_token=gamma_market.no_token_id,
                     active=gamma_market.active,
@@ -82,6 +92,23 @@ class Database:
         async with self.async_session() as session:
             result = await session.execute(
                 select(Market).where(Market.id == market_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_market_by_slug(self, slug: str) -> Market | None:
+        """Get a market by slug or event_id."""
+        async with self.async_session() as session:
+            # Try exact slug match first
+            result = await session.execute(
+                select(Market).where(Market.slug == slug)
+            )
+            market = result.scalar_one_or_none()
+            if market:
+                return market
+
+            # Try event_id match
+            result = await session.execute(
+                select(Market).where(Market.event_id == slug)
             )
             return result.scalar_one_or_none()
 
@@ -512,3 +539,336 @@ class Database:
             'total_pnl_pct': total_pnl_pct,
             'positions': position_details,
         }
+
+    # Alert Outcome operations
+    async def save_alert_outcome(
+        self,
+        alert_id: int,
+        market_id: str,
+        alert_type: str,
+        alert_timestamp: datetime,
+        signal_price_yes: float | None,
+        signal_price_no: float | None,
+    ) -> AlertOutcome:
+        """Save an alert outcome record for tracking."""
+        async with self.async_session() as session:
+            outcome = AlertOutcome(
+                alert_id=alert_id,
+                market_id=market_id,
+                alert_type=alert_type,
+                alert_timestamp=alert_timestamp,
+                signal_price_yes=signal_price_yes,
+                signal_price_no=signal_price_no,
+            )
+            session.add(outcome)
+            await session.commit()
+            await session.refresh(outcome)
+            return outcome
+
+    async def get_pending_alert_outcomes(self, min_age_hours: int = 24) -> list[AlertOutcome]:
+        """Get alert outcomes that are old enough to evaluate but not yet evaluated."""
+        cutoff = datetime.utcnow() - timedelta(hours=min_age_hours)
+
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(AlertOutcome)
+                .where(AlertOutcome.evaluated_at == None)
+                .where(AlertOutcome.alert_timestamp <= cutoff)
+            )
+            return list(result.scalars().all())
+
+    async def update_alert_outcome(
+        self,
+        outcome_id: int,
+        evaluation_type: str,
+        outcome_price_yes: float | None,
+        outcome_price_no: float | None,
+        profitable: bool,
+        profit_pct: float,
+    ) -> AlertOutcome | None:
+        """Update an alert outcome with evaluation results."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(AlertOutcome).where(AlertOutcome.id == outcome_id)
+            )
+            outcome = result.scalar_one_or_none()
+
+            if outcome:
+                outcome.evaluated_at = datetime.utcnow()
+                outcome.evaluation_type = evaluation_type
+                outcome.outcome_price_yes = outcome_price_yes
+                outcome.outcome_price_no = outcome_price_no
+                outcome.profitable = profitable
+                outcome.profit_pct = profit_pct
+                await session.commit()
+                await session.refresh(outcome)
+
+            return outcome
+
+    async def get_accuracy_stats(self) -> dict[str, Any]:
+        """Get accuracy statistics for all evaluated alerts."""
+        async with self.async_session() as session:
+            # Overall stats
+            total_result = await session.execute(
+                select(func.count(AlertOutcome.id))
+                .where(AlertOutcome.evaluated_at != None)
+            )
+            total_evaluated = total_result.scalar_one() or 0
+
+            profitable_result = await session.execute(
+                select(func.count(AlertOutcome.id))
+                .where(AlertOutcome.evaluated_at != None)
+                .where(AlertOutcome.profitable == True)
+            )
+            total_profitable = profitable_result.scalar_one() or 0
+
+            overall_pct = (total_profitable / total_evaluated * 100) if total_evaluated > 0 else 0
+
+            # Stats by type
+            by_type = {}
+            alert_types = ['arbitrage', 'volume_spike', 'price_move', 'trend', 'whale']
+
+            for alert_type in alert_types:
+                type_total_result = await session.execute(
+                    select(func.count(AlertOutcome.id))
+                    .where(AlertOutcome.evaluated_at != None)
+                    .where(AlertOutcome.alert_type == alert_type)
+                )
+                type_total = type_total_result.scalar_one() or 0
+
+                type_profitable_result = await session.execute(
+                    select(func.count(AlertOutcome.id))
+                    .where(AlertOutcome.evaluated_at != None)
+                    .where(AlertOutcome.alert_type == alert_type)
+                    .where(AlertOutcome.profitable == True)
+                )
+                type_profitable = type_profitable_result.scalar_one() or 0
+
+                type_pct = (type_profitable / type_total * 100) if type_total > 0 else 0
+
+                by_type[alert_type] = {
+                    'total': type_total,
+                    'profitable': type_profitable,
+                    'accuracy_pct': type_pct,
+                }
+
+            # Average profit percentage
+            avg_profit_result = await session.execute(
+                select(func.avg(AlertOutcome.profit_pct))
+                .where(AlertOutcome.evaluated_at != None)
+            )
+            avg_profit = avg_profit_result.scalar_one() or 0
+
+            return {
+                'total_evaluated': total_evaluated,
+                'total_profitable': total_profitable,
+                'overall_accuracy_pct': overall_pct,
+                'avg_profit_pct': avg_profit,
+                'by_type': by_type,
+            }
+
+    async def get_alert_with_prices(self, alert_id: int) -> tuple[Alert, PriceSnapshot | None] | None:
+        """Get an alert and its associated price snapshot."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Alert).where(Alert.id == alert_id)
+            )
+            alert = result.scalar_one_or_none()
+
+            if not alert:
+                return None
+
+            # Get price snapshot closest to alert timestamp
+            price_result = await session.execute(
+                select(PriceSnapshot)
+                .where(PriceSnapshot.market_id == alert.market_id)
+                .where(PriceSnapshot.timestamp <= alert.timestamp)
+                .order_by(PriceSnapshot.timestamp.desc())
+                .limit(1)
+            )
+            price = price_result.scalar_one_or_none()
+
+            return (alert, price)
+
+    # Market Score operations
+    async def save_market_score(
+        self,
+        market_id: str,
+        volume_score: float,
+        volume_trend_score: float,
+        liquidity_score: float,
+        volatility_score: float,
+        spread_score: float,
+        activity_score: float,
+        total_score: float,
+        previous_score: float | None = None,
+        score_change: float | None = None,
+    ) -> MarketScore:
+        """Save a market score."""
+        async with self.async_session() as session:
+            score = MarketScore(
+                market_id=market_id,
+                volume_score=volume_score,
+                volume_trend_score=volume_trend_score,
+                liquidity_score=liquidity_score,
+                volatility_score=volatility_score,
+                spread_score=spread_score,
+                activity_score=activity_score,
+                total_score=total_score,
+                previous_score=previous_score,
+                score_change=score_change,
+            )
+            session.add(score)
+            await session.commit()
+            await session.refresh(score)
+            return score
+
+    async def get_latest_market_score(self, market_id: str) -> MarketScore | None:
+        """Get the most recent score for a market."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(MarketScore)
+                .where(MarketScore.market_id == market_id)
+                .order_by(MarketScore.timestamp.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_top_scored_markets(self, limit: int = 10) -> list[tuple[Market, MarketScore]]:
+        """Get top markets by score with their latest scores."""
+        async with self.async_session() as session:
+            # Get latest score for each market using a subquery
+            from sqlalchemy import and_
+
+            # Get most recent scores
+            subquery = (
+                select(
+                    MarketScore.market_id,
+                    func.max(MarketScore.timestamp).label('max_ts')
+                )
+                .group_by(MarketScore.market_id)
+                .subquery()
+            )
+
+            # Join with MarketScore to get full records
+            result = await session.execute(
+                select(MarketScore)
+                .join(
+                    subquery,
+                    and_(
+                        MarketScore.market_id == subquery.c.market_id,
+                        MarketScore.timestamp == subquery.c.max_ts
+                    )
+                )
+                .order_by(MarketScore.total_score.desc())
+                .limit(limit)
+            )
+            scores = list(result.scalars().all())
+
+            # Get market details for each score
+            market_scores = []
+            for score in scores:
+                market_result = await session.execute(
+                    select(Market).where(Market.id == score.market_id)
+                )
+                market = market_result.scalar_one_or_none()
+                if market:
+                    market_scores.append((market, score))
+
+            return market_scores
+
+    async def get_market_score_history(
+        self,
+        market_id: str,
+        limit: int = 24,
+    ) -> list[MarketScore]:
+        """Get score history for a market."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(MarketScore)
+                .where(MarketScore.market_id == market_id)
+                .order_by(MarketScore.timestamp.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def get_price_updates_count(
+        self,
+        market_id: str,
+        hours: int = 1,
+    ) -> int:
+        """Get count of price updates for activity scoring."""
+        since = datetime.utcnow() - timedelta(hours=hours)
+
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(func.count(PriceSnapshot.id))
+                .where(PriceSnapshot.market_id == market_id)
+                .where(PriceSnapshot.timestamp >= since)
+            )
+            return result.scalar_one() or 0
+
+    async def get_all_24h_volumes(self) -> list[float]:
+        """Get all 24h volumes for percentile calculation."""
+        async with self.async_session() as session:
+            # Get latest volume for each market
+            subquery = (
+                select(
+                    VolumeSnapshot.market_id,
+                    func.max(VolumeSnapshot.timestamp).label('max_ts')
+                )
+                .group_by(VolumeSnapshot.market_id)
+                .subquery()
+            )
+
+            from sqlalchemy import and_
+            result = await session.execute(
+                select(VolumeSnapshot.volume_24h)
+                .join(
+                    subquery,
+                    and_(
+                        VolumeSnapshot.market_id == subquery.c.market_id,
+                        VolumeSnapshot.timestamp == subquery.c.max_ts
+                    )
+                )
+                .where(VolumeSnapshot.volume_24h != None)
+            )
+            return [v for (v,) in result.fetchall() if v is not None]
+
+    async def get_all_liquidities(self) -> list[float]:
+        """Get all liquidities for percentile calculation."""
+        async with self.async_session() as session:
+            # Get latest liquidity for each market
+            subquery = (
+                select(
+                    VolumeSnapshot.market_id,
+                    func.max(VolumeSnapshot.timestamp).label('max_ts')
+                )
+                .group_by(VolumeSnapshot.market_id)
+                .subquery()
+            )
+
+            from sqlalchemy import and_
+            result = await session.execute(
+                select(VolumeSnapshot.liquidity)
+                .join(
+                    subquery,
+                    and_(
+                        VolumeSnapshot.market_id == subquery.c.market_id,
+                        VolumeSnapshot.timestamp == subquery.c.max_ts
+                    )
+                )
+                .where(VolumeSnapshot.liquidity != None)
+            )
+            return [v for (v,) in result.fetchall() if v is not None]
+
+    async def get_latest_volume_snapshot(self, market_id: str) -> VolumeSnapshot | None:
+        """Get the most recent volume snapshot for a market."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(VolumeSnapshot)
+                .where(VolumeSnapshot.market_id == market_id)
+                .order_by(VolumeSnapshot.timestamp.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()

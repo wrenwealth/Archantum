@@ -14,7 +14,7 @@ from archantum.api import GammaClient, CLOBClient
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
 from archantum.db import Database
-from archantum.analysis import ArbitrageAnalyzer, VolumeAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, LiquidityAnalyzer
+from archantum.analysis import ArbitrageAnalyzer, VolumeAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, LiquidityAnalyzer, AccuracyTracker, MarketScorer
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
 
@@ -45,6 +45,8 @@ class PollingEngine:
         self.new_market_analyzer = NewMarketAnalyzer(self.db)
         self.resolution_analyzer = ResolutionAnalyzer(self.db)
         self.liquidity_analyzer = LiquidityAnalyzer(self.db)
+        self.accuracy_tracker = AccuracyTracker(self.db)
+        self.market_scorer = MarketScorer(self.db, spike_threshold=settings.score_spike_threshold)
 
         self.running = False
 
@@ -106,6 +108,9 @@ class PollingEngine:
             "new_markets": 0,
             "resolution_alerts": 0,
             "liquidity_changes": 0,
+            "accuracy_evaluated": 0,
+            "markets_scored": 0,
+            "score_spikes": 0,
             "alerts_sent": 0,
         }
 
@@ -159,6 +164,15 @@ class PollingEngine:
             liquidity_changes = await self.liquidity_analyzer.analyze(markets)
             results["liquidity_changes"] = len(liquidity_changes)
 
+            # Evaluate alert accuracy (24h+ old alerts)
+            accuracy_results = await self.accuracy_tracker.evaluate_pending_alerts()
+            results["accuracy_evaluated"] = len(accuracy_results)
+
+            # Score markets
+            scores, score_spikes = await self.market_scorer.score_markets(markets, all_prices)
+            results["markets_scored"] = len(scores)
+            results["score_spikes"] = len(score_spikes)
+
             # 6. Send alerts
             for opp in arbitrage_opps:
                 alert = self.alerter.format_arbitrage_alert(opp)
@@ -192,6 +206,11 @@ class PollingEngine:
 
             for liquidity in liquidity_changes:
                 alert = self.alerter.format_liquidity_alert(liquidity)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            for spike in score_spikes:
+                alert = self.alerter.format_score_spike_alert(spike)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -233,6 +252,9 @@ class PollingEngine:
                 console.print(f"  New markets: {results['new_markets']}")
                 console.print(f"  Resolution alerts: {results['resolution_alerts']}")
                 console.print(f"  Liquidity changes: {results['liquidity_changes']}")
+                console.print(f"  Score spikes: {results['score_spikes']}")
+                console.print(f"  Markets scored: {results['markets_scored']}")
+                console.print(f"  Accuracy evaluated: {results['accuracy_evaluated']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

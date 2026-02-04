@@ -128,3 +128,60 @@ class Position(Base):
 
     # Relationship
     market = relationship("Market")
+
+
+class AlertOutcome(Base):
+    """Alert outcome tracking for accuracy measurement."""
+
+    __tablename__ = "alert_outcomes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_id = Column(Integer, ForeignKey("alerts.id"), unique=True, nullable=False)
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+
+    # State at alert time
+    alert_type = Column(String, nullable=False)
+    alert_timestamp = Column(DateTime, nullable=False)
+    signal_price_yes = Column(Float, nullable=True)
+    signal_price_no = Column(Float, nullable=True)
+
+    # Outcome evaluation (after 24h or market resolution)
+    evaluated_at = Column(DateTime, nullable=True)
+    evaluation_type = Column(String, nullable=True)  # 'resolution' or '24h_check'
+    outcome_price_yes = Column(Float, nullable=True)
+    outcome_price_no = Column(Float, nullable=True)
+
+    # Result
+    profitable = Column(Boolean, nullable=True)
+    profit_pct = Column(Float, nullable=True)
+
+    # Relationships
+    alert = relationship("Alert")
+    market = relationship("Market")
+
+
+class MarketScore(Base):
+    """Market scoring for ranking and spike detection."""
+
+    __tablename__ = "market_scores"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+
+    # Component scores (0-100)
+    volume_score = Column(Float, nullable=False)        # 25% weight
+    volume_trend_score = Column(Float, nullable=False)  # 15% weight
+    liquidity_score = Column(Float, nullable=False)     # 20% weight
+    volatility_score = Column(Float, nullable=False)    # 15% weight
+    spread_score = Column(Float, nullable=False)        # 15% weight
+    activity_score = Column(Float, nullable=False)      # 10% weight
+
+    # Composite
+    total_score = Column(Float, nullable=False)
+    previous_score = Column(Float, nullable=True)
+    score_change = Column(Float, nullable=True)
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship
+    market = relationship("Market")

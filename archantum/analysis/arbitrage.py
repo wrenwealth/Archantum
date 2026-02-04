@@ -15,6 +15,7 @@ class ArbitrageOpportunity:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     yes_price: float
     no_price: float
     total_price: float
@@ -32,6 +33,7 @@ class ArbitrageOpportunity:
             "market_id": self.market_id,
             "question": self.question,
             "slug": self.slug,
+            "polymarket_url": self.polymarket_url,
             "yes_price": self.yes_price,
             "no_price": self.no_price,
             "total_price": self.total_price,
@@ -90,6 +92,7 @@ class ArbitrageAnalyzer:
             market_id=market.id,
             question=market.question,
             slug=market.slug,
+            polymarket_url=market.polymarket_url,
             yes_price=price_data.yes_price,
             no_price=price_data.no_price,
             total_price=total,

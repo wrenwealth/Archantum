@@ -17,6 +17,7 @@ class WhaleActivity:
     market_id: str
     question: str
     slug: str | None
+    polymarket_url: str | None
     volume_change: float  # Dollar change in volume
     volume_change_pct: float  # Percentage change
     previous_volume: float
@@ -91,6 +92,7 @@ class WhaleAnalyzer:
                         market_id=market.id,
                         question=market.question,
                         slug=market.slug,
+                        polymarket_url=market.polymarket_url,
                         volume_change=volume_change,
                         volume_change_pct=volume_change_pct * 100,
                         previous_volume=previous_volume,
