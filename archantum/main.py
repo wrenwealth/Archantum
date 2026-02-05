@@ -19,6 +19,7 @@ from archantum.analysis.indicators import TechnicalIndicatorCalculator
 from archantum.analysis.confluence import ConfluenceAnalyzer
 from archantum.analysis.scoring import MarketScorer
 from archantum.analysis.cross_platform import CrossPlatformAnalyzer
+from archantum.analysis.lp_rewards import LPRewardsAnalyzer
 from archantum.data import DataSourceManager, PriceValidator
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
@@ -66,6 +67,9 @@ class PollingEngine:
 
         # Cross-platform arbitrage
         self.cross_platform_analyzer = CrossPlatformAnalyzer()
+
+        # LP rewards analyzer
+        self.lp_rewards_analyzer = LPRewardsAnalyzer()
 
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
@@ -145,6 +149,7 @@ class PollingEngine:
             "price_discrepancies": 0,
             "market_scores": 0,
             "cross_platform_arbs": 0,
+            "lp_opportunities": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -323,7 +328,27 @@ class PollingEngine:
                 except Exception as e:
                     console.print(f"[yellow]Cross-platform analysis error: {e}[/yellow]")
 
-            # 10. Price validation across sources (WebSocket vs REST)
+            # 10. LP Rewards opportunities (every 5 polls, same as scoring)
+            lp_opportunities = []
+            if self._scoring_poll_count == 0:  # Runs when scoring runs (counter just reset)
+                console.print("[cyan]Finding LP opportunities...[/cyan]")
+                try:
+                    lp_opportunities = self.lp_rewards_analyzer.get_top_opportunities(
+                        markets, all_prices, top_n=5
+                    )
+                    results["lp_opportunities"] = len(lp_opportunities)
+
+                    if lp_opportunities:
+                        console.print(f"[dim]Top LP opportunities by APY:[/dim]")
+                        for i, lp_opp in enumerate(lp_opportunities[:3], 1):
+                            console.print(
+                                f"[dim]  {i}. ~{lp_opp.estimated_apy:.0f}% APY - "
+                                f"{lp_opp.question[:40]}...[/dim]"
+                            )
+                except Exception as e:
+                    console.print(f"[yellow]LP analysis error: {e}[/yellow]")
+
+            # 11. Price validation across sources (WebSocket vs REST)
             price_discrepancies = []
             if settings.ws_enabled and self.source_manager.websocket.stats.is_connected:
                 # Get fresh REST prices for validation
@@ -558,6 +583,7 @@ class PollingEngine:
                 console.print(f"  Price discrepancies: {results['price_discrepancies']}")
                 console.print(f"  Market scores: {results['market_scores']}")
                 console.print(f"  Cross-platform arbs: {results['cross_platform_arbs']}")
+                console.print(f"  LP opportunities: {results['lp_opportunities']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

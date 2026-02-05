@@ -20,6 +20,7 @@ from archantum.analysis.accuracy import AccuracyTracker
 from archantum.analysis.smartmoney import SmartMoneyAlert
 from archantum.analysis.confluence import ConfluenceSignal
 from archantum.analysis.cross_platform import CrossPlatformArbitrage
+from archantum.analysis.lp_rewards import LPOpportunity, LPSimulation
 from archantum.data.validator import ValidationResult
 
 
@@ -505,6 +506,71 @@ class TelegramAlerter:
             alert_type="data_source",
             message=message,
             details={"source": source, "status": status, **(details or {})},
+        )
+
+    def format_lp_opportunity_alert(self, opp: LPOpportunity) -> AlertMessage:
+        """Format an LP opportunity as an alert."""
+        # Tier based on APY
+        if opp.estimated_apy >= 100:
+            emoji = "💰💰💰"
+            title = "HIGH YIELD LP OPPORTUNITY"
+        elif opp.estimated_apy >= 50:
+            emoji = "💰💰"
+            title = "LP OPPORTUNITY"
+        else:
+            emoji = "💰"
+            title = "LP OPPORTUNITY"
+
+        # Competition indicator
+        if opp.competition_score <= 30:
+            comp_text = "🟢 Low"
+        elif opp.competition_score <= 60:
+            comp_text = "🟡 Medium"
+        else:
+            comp_text = "🔴 High"
+
+        # Two-sided requirement
+        sided_text = "⚠️ Two-sided required" if opp.requires_two_sided else "✅ Single-sided OK"
+
+        midpoint_cents = int(opp.midpoint * 100)
+        link = opp.polymarket_url or "N/A"
+
+        # Calculate earnings for different capital amounts
+        # APY is based on $1000 position, so we scale accordingly
+        base_daily = opp.estimated_daily_reward  # This is for ~$1000 position
+        daily_500 = base_daily * 0.5
+        daily_1000 = base_daily
+        daily_5000 = base_daily * 5
+
+        message = f"""{emoji} <b>{title}</b>
+
+<b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
+
+<b>Midpoint:</b> {midpoint_cents}¢
+<b>Max Spread:</b> ±{opp.max_spread_cents:.1f}¢
+
+<b>Estimasi Penghasilan (per hari):</b>
+  Modal $500 → ~${daily_500:.2f}/hari
+  Modal $1000 → ~${daily_1000:.2f}/hari
+  Modal $5000 → ~${daily_5000:.2f}/hari
+
+<b>APY:</b> ~{opp.estimated_apy:.0f}% (berdasarkan modal $1000)
+
+<b>Competition:</b> {comp_text}
+<b>Requirement:</b> {sided_text}
+
+<b>Cara LP:</b>
+  1. Pasang bid di {midpoint_cents - opp.recommended_spread:.0f}¢
+  2. Pasang ask di {midpoint_cents + opp.recommended_spread:.0f}¢
+  3. Spread: ±{opp.recommended_spread:.1f}¢ dari midpoint
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=opp.market_id,
+            alert_type="lp_opportunity",
+            message=message,
+            details=opp.to_dict(),
         )
 
     def format_cross_platform_alert(self, opp: CrossPlatformArbitrage) -> AlertMessage:
