@@ -15,6 +15,9 @@ from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
 from archantum.db import Database
 from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker, SmartMoneyTracker
+from archantum.analysis.indicators import TechnicalIndicatorCalculator
+from archantum.analysis.confluence import ConfluenceAnalyzer
+from archantum.data import DataSourceManager, PriceValidator
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
 
@@ -50,13 +53,25 @@ class PollingEngine:
             top_wallets_count=settings.smart_money_top_wallets,
         )
 
+        # NEW: Data engine components
+        self.source_manager = DataSourceManager(self.db)
+        self.indicator_calculator = TechnicalIndicatorCalculator(self.db)
+        self.confluence_analyzer = ConfluenceAnalyzer(self.db)
+        self.price_validator = PriceValidator(self.db)
+
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
+        self._ta_poll_count = 0  # Track polls for TA calculation
 
     async def init(self):
         """Initialize the engine."""
         await self.db.init_db()
         console.print("[green]Database initialized[/green]")
+
+        # Initialize data source manager (WebSocket + REST fallback)
+        await self.source_manager.initialize()
+        if settings.ws_enabled:
+            console.print("[green]WebSocket data source initialized[/green]")
 
         # Start bot if enabled
         if self.bot:
@@ -66,6 +81,7 @@ class PollingEngine:
         """Close connections."""
         if self.bot:
             await self.bot.stop()
+        await self.source_manager.close()
         await self.db.close()
 
     async def fetch_prices(
@@ -111,10 +127,13 @@ class PollingEngine:
             "resolution_alerts": 0,
             "accuracy_evaluated": 0,
             "smart_money_alerts": 0,
+            "confluence_signals": 0,
+            "price_discrepancies": 0,
             "alerts_sent": 0,
+            "data_source": "unknown",
         }
 
-        async with GammaClient() as gamma_client, CLOBClient() as clob_client:
+        async with GammaClient() as gamma_client:
             # 1. Fetch top active markets (filtered by volume)
             console.print("[cyan]Fetching top markets by volume...[/cyan]")
             markets = await gamma_client.get_top_markets()
@@ -124,16 +143,39 @@ class PollingEngine:
             # 2. Update markets in database
             await self.db.upsert_markets(markets)
 
-            # 3. Fetch prices with rate limiting
+            # 3. Subscribe to WebSocket for new markets
+            if settings.ws_enabled:
+                market_tokens = [
+                    {
+                        "id": m.id,
+                        "yes_token": m.yes_token_id,
+                        "no_token": m.no_token_id,
+                    }
+                    for m in markets
+                ]
+                await self.source_manager.subscribe_markets(market_tokens)
+
+            # 4. Fetch prices using data source manager (WebSocket -> REST -> Cache)
             console.print("[cyan]Fetching prices...[/cyan]")
-            all_prices = await self.fetch_prices(clob_client, markets)
-            results["prices_fetched"] = len(all_prices)
+            all_price_results = await self._fetch_prices_with_failover(markets)
+            results["prices_fetched"] = len(all_price_results)
 
-            # 4. Save price snapshots
-            for market_id, price_data in all_prices.items():
-                await self.db.save_price_snapshot(price_data)
+            # Track primary data source
+            source_counts = {}
+            for pr in all_price_results.values():
+                source_counts[pr.source] = source_counts.get(pr.source, 0) + 1
+            results["data_source"] = max(source_counts.keys(), key=lambda k: source_counts[k]) if source_counts else "none"
 
-            # 5. Run analysis
+            # Convert to PriceData for compatibility with existing analyzers
+            all_prices: dict[str, PriceData] = {}
+            for market_id, price_result in all_price_results.items():
+                all_prices[market_id] = price_result.to_price_data()
+
+            # 5. Save price snapshots with source tracking
+            for market_id, price_result in all_price_results.items():
+                await self._save_price_snapshot_with_source(price_result)
+
+            # 6. Run analysis
             console.print("[cyan]Running analysis...[/cyan]")
 
             # Arbitrage detection
@@ -175,7 +217,63 @@ class PollingEngine:
             smart_money_alerts = await self.smart_money_tracker.get_pending_alerts()
             results["smart_money_alerts"] = len(smart_money_alerts)
 
-            # 6. Send alerts
+            # 7. Technical Analysis (every ta_poll_frequency polls)
+            confluence_signals = []
+            if settings.ta_enabled:
+                self._ta_poll_count += 1
+                if self._ta_poll_count >= settings.ta_poll_frequency:
+                    self._ta_poll_count = 0
+                    console.print("[cyan]Running technical analysis...[/cyan]")
+
+                    # Build market info and prices for confluence analyzer
+                    market_dicts = [
+                        {
+                            "id": m.id,
+                            "question": m.question,
+                            "event_id": self._get_event_slug(m),
+                        }
+                        for m in markets
+                    ]
+                    prices_for_ta = {
+                        mid: pr.yes_price
+                        for mid, pr in all_price_results.items()
+                        if pr.yes_price is not None
+                    }
+
+                    try:
+                        confluence_signals = await self.confluence_analyzer.analyze_markets(
+                            market_dicts, prices_for_ta
+                        )
+                        results["confluence_signals"] = len(confluence_signals)
+                    except Exception as e:
+                        console.print(f"[yellow]TA analysis error: {e}[/yellow]")
+
+            # 8. Price validation across sources (WebSocket vs REST)
+            price_discrepancies = []
+            if settings.ws_enabled and self.source_manager.websocket.stats.is_connected:
+                # Get fresh REST prices for validation
+                ws_prices = {
+                    mid: pr for mid, pr in all_price_results.items()
+                    if pr.source == "websocket"
+                }
+                if ws_prices:
+                    rest_prices = await self._fetch_rest_prices_for_validation(markets, ws_prices.keys())
+                    market_info = {
+                        m.id: {
+                            "question": m.question,
+                            "polymarket_url": self._build_polymarket_url(m),
+                        }
+                        for m in markets
+                    }
+                    try:
+                        price_discrepancies = await self.price_validator.validate_batch(
+                            ws_prices, rest_prices, market_info
+                        )
+                        results["price_discrepancies"] = len(price_discrepancies)
+                    except Exception as e:
+                        console.print(f"[yellow]Price validation error: {e}[/yellow]")
+
+            # 9. Send alerts
             for opp in arbitrage_opps:
                 alert = self.alerter.format_arbitrage_alert(opp)
                 await self.alerter.send_alert(alert)
@@ -206,10 +304,123 @@ class PollingEngine:
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
+            # Send confluence alerts
+            for signal in confluence_signals:
+                alert = self.alerter.format_confluence_alert(signal)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            # Send price discrepancy alerts (only potential arbitrage)
+            for discrepancy in price_discrepancies:
+                if discrepancy.potential_arbitrage:
+                    alert = self.alerter.format_price_discrepancy_alert(discrepancy)
+                    await self.alerter.send_alert(alert)
+                    results["alerts_sent"] += 1
+
             # Update dashboard
             self.dashboard.set_last_poll(datetime.utcnow())
 
         return results
+
+    async def _fetch_prices_with_failover(
+        self,
+        markets: list[GammaMarket],
+    ) -> dict[str, "PriceResult"]:
+        """Fetch prices using data source manager with failover."""
+        from archantum.data import PriceResult
+
+        all_prices: dict[str, PriceResult] = {}
+
+        batches = chunk_list(markets, settings.batch_size)
+        total_batches = len(batches)
+
+        for i, batch in enumerate(batches, 1):
+            console.print(f"[dim]Fetching prices batch {i}/{total_batches}...[/dim]")
+
+            for market in batch:
+                try:
+                    price_result = await self.source_manager.get_price(
+                        market_id=market.id,
+                        yes_token=market.yes_token_id,
+                        no_token=market.no_token_id,
+                    )
+                    all_prices[market.id] = price_result
+                except Exception as e:
+                    console.print(f"[yellow]Error fetching price for {market.id}: {e}[/yellow]")
+
+            # Rate limit between batches
+            if i < total_batches:
+                await asyncio.sleep(settings.batch_delay)
+
+        return all_prices
+
+    async def _save_price_snapshot_with_source(self, price_result: "PriceResult") -> None:
+        """Save price snapshot with source tracking."""
+        from archantum.db.models import PriceSnapshot
+
+        async with self.db.async_session() as session:
+            snapshot = PriceSnapshot(
+                market_id=price_result.market_id,
+                yes_price=price_result.yes_price,
+                no_price=price_result.no_price,
+                yes_bid=price_result.yes_bid,
+                yes_ask=price_result.yes_ask,
+                no_bid=price_result.no_bid,
+                no_ask=price_result.no_ask,
+                spread=price_result.spread,
+                source=price_result.source,
+            )
+            session.add(snapshot)
+            await session.commit()
+
+    async def _fetch_rest_prices_for_validation(
+        self,
+        markets: list[GammaMarket],
+        market_ids: set[str],
+    ) -> dict[str, "PriceResult"]:
+        """Fetch REST prices for a subset of markets for validation."""
+        from archantum.data import PriceResult
+
+        rest_prices = {}
+
+        async with CLOBClient() as clob_client:
+            for market in markets:
+                if market.id not in market_ids:
+                    continue
+
+                try:
+                    price_data = await clob_client.get_price_for_market(
+                        yes_token_id=market.yes_token_id,
+                        no_token_id=market.no_token_id,
+                        market_id=market.id,
+                    )
+                    rest_prices[market.id] = PriceResult(
+                        market_id=market.id,
+                        yes_price=price_data.yes_price,
+                        no_price=price_data.no_price,
+                        yes_bid=price_data.yes_bid,
+                        yes_ask=price_data.yes_ask,
+                        no_bid=price_data.no_bid,
+                        no_ask=price_data.no_ask,
+                        source="rest",
+                    )
+                except Exception:
+                    pass
+
+        return rest_prices
+
+    def _get_event_slug(self, market: GammaMarket) -> str | None:
+        """Get event slug from market."""
+        if market.events and len(market.events) > 0:
+            return market.events[0].get("slug")
+        return market.event_slug
+
+    def _build_polymarket_url(self, market: GammaMarket) -> str | None:
+        """Build Polymarket URL for a market."""
+        event_slug = self._get_event_slug(market)
+        if event_slug:
+            return f"https://polymarket.com/event/{event_slug}"
+        return None
 
     async def run(self):
         """Run the main polling loop."""
@@ -224,6 +435,16 @@ class PollingEngine:
         console.print(f"[dim]Poll interval: {settings.poll_interval}s[/dim]")
         console.print(f"[dim]Arbitrage threshold: {settings.arbitrage_threshold * 100}%[/dim]")
         console.print(f"[dim]Price move threshold: {settings.price_move_threshold * 100}%[/dim]")
+
+        # Show data engine status
+        if settings.ws_enabled:
+            console.print(f"[dim]WebSocket: Enabled[/dim]")
+        else:
+            console.print(f"[dim]WebSocket: Disabled[/dim]")
+        if settings.ta_enabled:
+            console.print(f"[dim]Technical Analysis: Enabled (every {settings.ta_poll_frequency} polls)[/dim]")
+        else:
+            console.print(f"[dim]Technical Analysis: Disabled[/dim]")
         console.print()
 
         while self.running:
@@ -235,7 +456,7 @@ class PollingEngine:
 
                 console.print(f"[green]Poll complete:[/green]")
                 console.print(f"  Markets: {results['markets_fetched']}")
-                console.print(f"  Prices: {results['prices_fetched']}")
+                console.print(f"  Prices: {results['prices_fetched']} (source: {results['data_source']})")
                 console.print(f"  Arbitrage opps: {results['arbitrage_opportunities']}")
                 console.print(f"  Price moves: {results['price_movements']}")
                 console.print(f"  Whale activities: {results['whale_activities']}")
@@ -243,6 +464,8 @@ class PollingEngine:
                 console.print(f"  Resolution alerts: {results['resolution_alerts']}")
                 console.print(f"  Accuracy evaluated: {results['accuracy_evaluated']}")
                 console.print(f"  Smart money alerts: {results['smart_money_alerts']}")
+                console.print(f"  Confluence signals: {results['confluence_signals']}")
+                console.print(f"  Price discrepancies: {results['price_discrepancies']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")
@@ -339,6 +562,25 @@ def status():
         console.print(f"Active markets: {market_count}")
         console.print(f"Alerts today: {len(alerts_today)}")
         console.print(f"Telegram: {'Configured' if settings.telegram_configured else 'Not configured'}")
+
+        # Data engine status
+        console.print("\n[bold cyan]Data Engine[/bold cyan]")
+        console.print(f"WebSocket: {'Enabled' if settings.ws_enabled else 'Disabled'}")
+        console.print(f"Technical Analysis: {'Enabled' if settings.ta_enabled else 'Disabled'}")
+        console.print(f"TA Frequency: Every {settings.ta_poll_frequency} polls")
+        console.print(f"Confluence Threshold: {settings.confluence_alert_threshold}")
+        console.print(f"RSI Oversold/Overbought: {settings.rsi_oversold}/{settings.rsi_overbought}")
+
+        # Get price discrepancy stats if available
+        try:
+            validator = PriceValidator(db)
+            disc_stats = await validator.get_discrepancy_stats()
+            console.print("\n[bold cyan]Price Discrepancies (24h)[/bold cyan]")
+            console.print(f"Significant: {disc_stats['last_24h_significant']}")
+            console.print(f"Potential Arbitrage: {disc_stats['potential_arbitrage']}")
+        except Exception:
+            pass
+
         console.print()
 
         await db.close()

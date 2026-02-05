@@ -18,6 +18,8 @@ from archantum.analysis.new_market import NewMarket
 from archantum.analysis.resolution import ResolutionAlert
 from archantum.analysis.accuracy import AccuracyTracker
 from archantum.analysis.smartmoney import SmartMoneyAlert
+from archantum.analysis.confluence import ConfluenceSignal
+from archantum.data.validator import ValidationResult
 
 
 console = Console()
@@ -338,6 +340,121 @@ class TelegramAlerter:
             alert_type="smart_money",
             message=message,
             details=alert.to_dict(),
+        )
+
+    def format_confluence_alert(self, signal: ConfluenceSignal) -> AlertMessage:
+        """Format a confluence signal as an alert."""
+        # Choose emoji based on signal
+        signal_emojis = {
+            "strong_buy": "🟢🟢",
+            "buy": "🟢",
+            "neutral": "⚪",
+            "sell": "🔴",
+            "strong_sell": "🔴🔴",
+        }
+        emoji = signal_emojis.get(signal.signal, "📊")
+
+        # Format individual indicators
+        rsi_text = f"RSI(14): {signal.rsi_value:.1f}" if signal.rsi_value else "RSI(14): N/A"
+        if signal.rsi_signal == "oversold":
+            rsi_text += " - OVERSOLD"
+        elif signal.rsi_signal == "overbought":
+            rsi_text += " - OVERBOUGHT"
+
+        macd_text = signal.macd_signal.upper().replace("_", " ")
+        ma_text = signal.ma_trend.upper().replace("_", " ")
+
+        cross_text = ""
+        if signal.cross_signal:
+            cross_text = f"\nMA Cross: {signal.cross_signal.upper().replace('_', ' ')}"
+
+        link = signal.polymarket_url or "N/A"
+
+        message = f"""{emoji} <b>CONFLUENCE SIGNAL: {signal.signal.upper().replace('_', ' ')}</b>
+
+<b>Market:</b> {signal.question[:100]}{'...' if len(signal.question) > 100 else ''}
+<b>Current Price:</b> ${signal.current_price:.2f}
+<b>Confluence Score:</b> {signal.confluence_score:.0f}/100
+
+<b>Indicators:</b>
+  {rsi_text}
+  MACD: {macd_text}
+  MA Trend: {ma_text}{cross_text}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=signal.market_id,
+            alert_type="confluence",
+            message=message,
+            details=signal.to_dict(),
+        )
+
+    def format_price_discrepancy_alert(self, validation: ValidationResult) -> AlertMessage:
+        """Format a price discrepancy alert."""
+        emoji = "⚠️"
+        if validation.potential_arbitrage:
+            emoji = "🚨"
+
+        ws_yes = f"${validation.websocket_yes:.2f}" if validation.websocket_yes else "N/A"
+        ws_no = f"${validation.websocket_no:.2f}" if validation.websocket_no else "N/A"
+        rest_yes = f"${validation.rest_yes:.2f}" if validation.rest_yes else "N/A"
+        rest_no = f"${validation.rest_no:.2f}" if validation.rest_no else "N/A"
+
+        arbitrage_text = "Yes" if validation.potential_arbitrage else "No"
+        link = validation.polymarket_url or "N/A"
+
+        message = f"""{emoji} <b>PRICE DISCREPANCY DETECTED</b>
+
+<b>Market:</b> {validation.question[:100]}{'...' if len(validation.question) > 100 else ''}
+
+<b>WebSocket:</b> Yes {ws_yes} / No {ws_no}
+<b>REST API:</b>  Yes {rest_yes} / No {rest_no}
+
+<b>Discrepancy:</b> {validation.max_diff_pct:.1f}%
+<b>Potential Arbitrage:</b> {arbitrage_text}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=validation.market_id,
+            alert_type="price_discrepancy",
+            message=message,
+            details=validation.to_dict(),
+        )
+
+    def format_data_source_alert(
+        self,
+        source: str,
+        status: str,
+        details: dict[str, Any] | None = None,
+    ) -> AlertMessage:
+        """Format a data source status alert."""
+        status_emojis = {
+            "connected": "🟢",
+            "disconnected": "🟡",
+            "failed": "🔴",
+            "degraded": "🟠",
+        }
+        emoji = status_emojis.get(status, "⚪")
+
+        details_text = ""
+        if details:
+            if "reason" in details:
+                details_text = f"\n<b>Reason:</b> {details['reason']}"
+            if "reliability" in details:
+                details_text += f"\n<b>Reliability:</b> {details['reliability']:.1f}%"
+
+        message = f"""{emoji} <b>DATA SOURCE {status.upper()}</b>
+
+<b>Source:</b> {source}
+<b>Status:</b> {status}{details_text}"""
+
+        return AlertMessage(
+            market_id="system",
+            alert_type="data_source",
+            message=message,
+            details={"source": source, "status": status, **(details or {})},
         )
 
     async def send_test_alert(self) -> bool:

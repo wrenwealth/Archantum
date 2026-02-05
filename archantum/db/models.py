@@ -57,6 +57,7 @@ class PriceSnapshot(Base):
     no_bid = Column(Float, nullable=True)
     no_ask = Column(Float, nullable=True)
     spread = Column(Float, nullable=True)
+    source = Column(String, nullable=True)  # 'websocket', 'rest', 'cache'
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     # Relationship
@@ -215,3 +216,71 @@ class SmartTrade(Base):
 
     # Relationship
     wallet = relationship("SmartWallet", back_populates="trades")
+
+
+class DataSourceLog(Base):
+    """Logs for data source requests and reliability tracking."""
+
+    __tablename__ = "data_source_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_type = Column(String, nullable=False)  # 'websocket', 'rest', 'cache'
+    market_id = Column(String, ForeignKey("markets.id"), nullable=True)
+    request_timestamp = Column(DateTime, default=datetime.utcnow)
+    response_time_ms = Column(Float, nullable=True)
+    success = Column(Boolean, default=True)
+    error_message = Column(Text, nullable=True)
+
+
+class TechnicalIndicator(Base):
+    """Technical analysis indicators for markets."""
+
+    __tablename__ = "technical_indicators"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    # RSI
+    rsi_14 = Column(Float, nullable=True)
+
+    # MACD
+    macd_line = Column(Float, nullable=True)
+    macd_signal = Column(Float, nullable=True)
+    macd_histogram = Column(Float, nullable=True)
+
+    # Simple Moving Averages
+    sma_10 = Column(Float, nullable=True)
+    sma_20 = Column(Float, nullable=True)
+    sma_50 = Column(Float, nullable=True)
+
+    # Exponential Moving Averages
+    ema_12 = Column(Float, nullable=True)
+    ema_26 = Column(Float, nullable=True)
+
+    # Confluence
+    confluence_score = Column(Float, nullable=True)
+    confluence_signal = Column(String, nullable=True)  # 'strong_buy', 'buy', 'neutral', 'sell', 'strong_sell'
+
+
+class PriceDiscrepancy(Base):
+    """Price discrepancies between data sources."""
+
+    __tablename__ = "price_discrepancies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    # WebSocket prices
+    websocket_yes = Column(Float, nullable=True)
+    websocket_no = Column(Float, nullable=True)
+
+    # REST API prices
+    rest_yes = Column(Float, nullable=True)
+    rest_no = Column(Float, nullable=True)
+
+    # Analysis
+    max_diff_pct = Column(Float, nullable=True)
+    is_significant = Column(Boolean, default=False)  # > 2%
+    potential_arbitrage = Column(Boolean, default=False)  # > 3%
