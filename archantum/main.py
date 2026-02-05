@@ -14,7 +14,7 @@ from archantum.api import GammaClient, CLOBClient
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
 from archantum.db import Database
-from archantum.analysis import ArbitrageAnalyzer, VolumeAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker
+from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
 
@@ -38,7 +38,6 @@ class PollingEngine:
 
         # Analyzers
         self.arbitrage_analyzer = ArbitrageAnalyzer()
-        self.volume_analyzer = VolumeAnalyzer(self.db)
         self.price_analyzer = PriceAnalyzer(self.db)
         self.trend_analyzer = TrendAnalyzer(self.db)
         self.whale_analyzer = WhaleAnalyzer(self.db)
@@ -100,7 +99,6 @@ class PollingEngine:
             "markets_fetched": 0,
             "prices_fetched": 0,
             "arbitrage_opportunities": 0,
-            "volume_spikes": 0,
             "price_movements": 0,
             "whale_activities": 0,
             "new_markets": 0,
@@ -135,10 +133,6 @@ class PollingEngine:
             arbitrage_opps = self.arbitrage_analyzer.analyze(markets, all_prices)
             results["arbitrage_opportunities"] = len(arbitrage_opps)
 
-            # Volume spike detection
-            volume_spikes = await self.volume_analyzer.analyze(markets)
-            results["volume_spikes"] = len(volume_spikes)
-
             # Price movement detection
             price_moves = await self.price_analyzer.analyze(markets, all_prices)
             results["price_movements"] = len(price_moves)
@@ -162,11 +156,6 @@ class PollingEngine:
             # 6. Send alerts
             for opp in arbitrage_opps:
                 alert = self.alerter.format_arbitrage_alert(opp)
-                await self.alerter.send_alert(alert)
-                results["alerts_sent"] += 1
-
-            for spike in volume_spikes:
-                alert = self.alerter.format_volume_alert(spike)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -207,7 +196,6 @@ class PollingEngine:
 
         console.print(f"[dim]Poll interval: {settings.poll_interval}s[/dim]")
         console.print(f"[dim]Arbitrage threshold: {settings.arbitrage_threshold * 100}%[/dim]")
-        console.print(f"[dim]Volume spike multiplier: {settings.volume_spike_multiplier}x[/dim]")
         console.print(f"[dim]Price move threshold: {settings.price_move_threshold * 100}%[/dim]")
         console.print()
 
@@ -222,7 +210,6 @@ class PollingEngine:
                 console.print(f"  Markets: {results['markets_fetched']}")
                 console.print(f"  Prices: {results['prices_fetched']}")
                 console.print(f"  Arbitrage opps: {results['arbitrage_opportunities']}")
-                console.print(f"  Volume spikes: {results['volume_spikes']}")
                 console.print(f"  Price moves: {results['price_movements']}")
                 console.print(f"  Whale activities: {results['whale_activities']}")
                 console.print(f"  New markets: {results['new_markets']}")

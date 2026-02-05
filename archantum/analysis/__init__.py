@@ -1,7 +1,6 @@
 """Analysis modules for detecting trading opportunities."""
 
 from .arbitrage import ArbitrageAnalyzer, ArbitrageOpportunity
-from .volume import VolumeAnalyzer, VolumeSpike
 from .price import PriceAnalyzer, PriceMovement
 from .trends import TrendAnalyzer, TrendSignal
 from .whale import WhaleAnalyzer, WhaleActivity
@@ -13,8 +12,6 @@ from .accuracy import AccuracyTracker, AccuracyResult
 __all__ = [
     "ArbitrageAnalyzer",
     "ArbitrageOpportunity",
-    "VolumeAnalyzer",
-    "VolumeSpike",
     "PriceAnalyzer",
     "PriceMovement",
     "TrendAnalyzer",

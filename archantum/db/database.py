@@ -186,22 +186,6 @@ class Database:
             result = await session.execute(query)
             return list(result.scalars().all())
 
-    async def get_volume_rolling_average(
-        self,
-        market_id: str,
-        days: int = 7,
-    ) -> float | None:
-        """Calculate rolling average volume for a market."""
-        since = datetime.utcnow() - timedelta(days=days)
-
-        async with self.async_session() as session:
-            result = await session.execute(
-                select(func.avg(VolumeSnapshot.volume_24h))
-                .where(VolumeSnapshot.market_id == market_id)
-                .where(VolumeSnapshot.timestamp >= since)
-            )
-            return result.scalar_one_or_none()
-
     async def save_alert(
         self,
         market_id: str,
