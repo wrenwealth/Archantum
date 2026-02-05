@@ -14,7 +14,7 @@ from archantum.api import GammaClient, CLOBClient
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
 from archantum.db import Database
-from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker
+from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker, SmartMoneyTracker
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
 
@@ -44,8 +44,14 @@ class PollingEngine:
         self.new_market_analyzer = NewMarketAnalyzer(self.db)
         self.resolution_analyzer = ResolutionAnalyzer(self.db)
         self.accuracy_tracker = AccuracyTracker(self.db)
+        self.smart_money_tracker = SmartMoneyTracker(
+            self.db,
+            min_trade_usdc=settings.smart_money_min_trade_usdc,
+            top_wallets_count=settings.smart_money_top_wallets,
+        )
 
         self.running = False
+        self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
 
     async def init(self):
         """Initialize the engine."""
@@ -104,6 +110,7 @@ class PollingEngine:
             "new_markets": 0,
             "resolution_alerts": 0,
             "accuracy_evaluated": 0,
+            "smart_money_alerts": 0,
             "alerts_sent": 0,
         }
 
@@ -153,6 +160,21 @@ class PollingEngine:
             accuracy_results = await self.accuracy_tracker.evaluate_pending_alerts()
             results["accuracy_evaluated"] = len(accuracy_results)
 
+            # Smart money tracking (sync every 5 polls to avoid API spam)
+            self._smart_money_poll_count += 1
+            if self._smart_money_poll_count >= 5:
+                self._smart_money_poll_count = 0
+                try:
+                    console.print("[cyan]Syncing smart money wallets...[/cyan]")
+                    await self.smart_money_tracker.sync_leaderboard()
+                    await self.smart_money_tracker.sync_all_tracked_wallets()
+                except Exception as e:
+                    console.print(f"[yellow]Smart money sync error: {e}[/yellow]")
+
+            # Get pending smart money alerts
+            smart_money_alerts = await self.smart_money_tracker.get_pending_alerts()
+            results["smart_money_alerts"] = len(smart_money_alerts)
+
             # 6. Send alerts
             for opp in arbitrage_opps:
                 alert = self.alerter.format_arbitrage_alert(opp)
@@ -176,6 +198,11 @@ class PollingEngine:
 
             for resolution in resolution_alerts:
                 alert = self.alerter.format_resolution_alert(resolution)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            for smart_alert in smart_money_alerts:
+                alert = self.alerter.format_smart_money_alert(smart_alert)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -215,6 +242,7 @@ class PollingEngine:
                 console.print(f"  New markets: {results['new_markets']}")
                 console.print(f"  Resolution alerts: {results['resolution_alerts']}")
                 console.print(f"  Accuracy evaluated: {results['accuracy_evaluated']}")
+                console.print(f"  Smart money alerts: {results['smart_money_alerts']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

@@ -18,6 +18,7 @@ from archantum.config import settings
 from archantum.db import Database
 from archantum.api import GammaClient
 from archantum.analysis.historical import HistoricalAnalyzer
+from archantum.analysis.smartmoney import SmartMoneyTracker
 
 
 console = Console()
@@ -30,6 +31,11 @@ class TelegramBot:
         self.db = db
         self.application: Application | None = None
         self.historical = HistoricalAnalyzer(db)
+        self.smart_money = SmartMoneyTracker(
+            db,
+            min_trade_usdc=settings.smart_money_min_trade_usdc,
+            top_wallets_count=settings.smart_money_top_wallets,
+        )
 
     async def start(self):
         """Start the bot."""
@@ -68,6 +74,11 @@ class TelegramBot:
         # Accuracy tracking
         self.application.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
 
+        # Smart money tracking
+        self.application.add_handler(CommandHandler("smartmoney", self.cmd_smartmoney))
+        self.application.add_handler(CommandHandler("wallet", self.cmd_wallet))
+        self.application.add_handler(CommandHandler("syncwallets", self.cmd_syncwallets))
+
         # Utility commands
         self.application.add_handler(CommandHandler("getid", self.cmd_getid))
 
@@ -88,6 +99,8 @@ class TelegramBot:
             BotCommand("pnl", "P&L summary"),
             BotCommand("history", "Price history"),
             BotCommand("chart", "Price chart"),
+            BotCommand("smartmoney", "Top smart wallets"),
+            BotCommand("wallet", "Wallet details"),
             BotCommand("accuracy", "Signal accuracy stats"),
             BotCommand("stats", "Alert statistics"),
             BotCommand("status", "Bot status"),
@@ -160,6 +173,11 @@ Use /help to see all available commands."""
 /history &lt;market_id&gt; - Price history &amp; stats
 /chart &lt;market_id&gt; - Mini price chart
 /accuracy - Signal accuracy stats
+
+<b>Smart Money:</b>
+/smartmoney - Top profitable wallets
+/wallet &lt;address&gt; - Wallet details &amp; trades
+/syncwallets - Sync leaderboard wallets
 
 <b>Stats:</b>
 /stats - Alert statistics
@@ -389,8 +407,8 @@ Use /help to see all available commands."""
             text += f"<b>Alerts today:</b> {len(alerts_today)}\n\n"
             text += "<b>Thresholds:</b>\n"
             text += f"  Arbitrage: {settings.arbitrage_threshold * 100:.1f}%\n"
-            text += f"  Volume spike: {settings.volume_spike_multiplier}x\n"
             text += f"  Price move: {settings.price_move_threshold * 100:.1f}%\n"
+            text += f"  Smart money min trade: ${settings.smart_money_min_trade_usdc:,.0f}\n"
 
             await update.message.reply_text(text, parse_mode="HTML")
 
@@ -784,3 +802,110 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error fetching accuracy: {e}")
+
+    # Smart money commands
+    async def cmd_smartmoney(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /smartmoney command - show top smart wallets."""
+        try:
+            wallets = await self.smart_money.get_top_wallets(limit=10)
+
+            if not wallets:
+                await update.message.reply_text(
+                    "No smart wallets tracked yet.\n"
+                    "Use /syncwallets to sync from leaderboard."
+                )
+                return
+
+            text = "🧠 <b>Top Smart Money Wallets</b>\n\n"
+
+            for i, w in enumerate(wallets, 1):
+                # Format PnL
+                pnl = w['pnl']
+                if pnl >= 1_000_000:
+                    pnl_str = f"${pnl/1_000_000:.1f}M"
+                elif pnl >= 1_000:
+                    pnl_str = f"${pnl/1_000:.0f}K"
+                else:
+                    pnl_str = f"${pnl:,.0f}"
+
+                rank_str = f"#{w['rank']}" if w['rank'] else ""
+                emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+
+                text += f"{emoji} <b>{w['username']}</b> {rank_str}\n"
+                text += f"   PnL: {pnl_str} | Trades: {w['total_trades']}\n"
+                text += f"   <code>{w['address_short']}</code>\n\n"
+
+            text += "<i>Use /wallet &lt;address&gt; for details</i>"
+            await update.message.reply_text(text, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching smart wallets: {e}")
+
+    async def cmd_wallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /wallet command - show wallet details."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /wallet <address>\n"
+                "Get addresses from /smartmoney"
+            )
+            return
+
+        address = context.args[0]
+
+        try:
+            stats = await self.smart_money.get_wallet_stats(address)
+
+            if not stats:
+                await update.message.reply_text(f"Wallet not found: {address[:10]}...")
+                return
+
+            # Format PnL
+            pnl = stats['pnl']
+            if pnl >= 1_000_000:
+                pnl_str = f"${pnl/1_000_000:.1f}M"
+            elif pnl >= 1_000:
+                pnl_str = f"${pnl/1_000:.0f}K"
+            else:
+                pnl_str = f"${pnl:,.0f}"
+
+            rank_str = f"#{stats['rank']}" if stats['rank'] else "Unranked"
+
+            text = f"🧠 <b>Wallet: {stats['username']}</b>\n\n"
+            text += f"<b>Address:</b> <code>{stats['address'][:20]}...</code>\n"
+            text += f"<b>Rank:</b> {rank_str}\n"
+            text += f"<b>Total PnL:</b> {pnl_str}\n"
+            text += f"<b>Total Trades:</b> {stats['total_trades']}\n"
+
+            if stats['last_trade']:
+                text += f"<b>Last Trade:</b> {stats['last_trade'].strftime('%Y-%m-%d %H:%M')}\n"
+
+            # Recent trades
+            if stats['recent_trades']:
+                text += "\n<b>Recent Trades:</b>\n"
+                for t in stats['recent_trades'][:5]:
+                    side_emoji = "🟢" if t['side'] == "BUY" else "🔴"
+                    text += f"{side_emoji} {t['side']} {t['outcome']} @ ${t['price']:.2f}\n"
+                    text += f"   ${t['usdc']:,.0f} - {t['market'][:30]}...\n"
+
+            await update.message.reply_text(text, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching wallet: {e}")
+
+    async def cmd_syncwallets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /syncwallets command - sync wallets from leaderboard."""
+        await update.message.reply_text("Syncing wallets from leaderboard...")
+
+        try:
+            count = await self.smart_money.sync_leaderboard(time_period="WEEK")
+
+            if count > 0:
+                await update.message.reply_text(
+                    f"✅ Synced {count} wallets from leaderboard.\n"
+                    f"Use /smartmoney to see top wallets."
+                )
+            else:
+                await update.message.reply_text("No wallets synced. API might be unavailable.")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error syncing wallets: {e}")

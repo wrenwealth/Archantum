@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # Accuracy tracking
     accuracy_eval_hours: int = Field(default=24, description="Hours before evaluating alert accuracy")
 
+    # Smart money tracking
+    smart_money_min_trade_usdc: float = Field(default=500.0, description="Min trade size for alerts")
+    smart_money_top_wallets: int = Field(default=20, description="Number of top wallets to track")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -8,6 +8,7 @@ from .new_market import NewMarketAnalyzer, NewMarket
 from .resolution import ResolutionAnalyzer, ResolutionAlert
 from .historical import HistoricalAnalyzer, PriceHistory, BacktestResult
 from .accuracy import AccuracyTracker, AccuracyResult
+from .smartmoney import SmartMoneyTracker, SmartMoneyAlert
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -27,4 +28,6 @@ __all__ = [
     "BacktestResult",
     "AccuracyTracker",
     "AccuracyResult",
+    "SmartMoneyTracker",
+    "SmartMoneyAlert",
 ]

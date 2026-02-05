@@ -158,3 +158,60 @@ class AlertOutcome(Base):
     # Relationships
     alert = relationship("Alert")
     market = relationship("Market")
+
+
+class SmartWallet(Base):
+    """Tracked smart money wallets."""
+
+    __tablename__ = "smart_wallets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    wallet_address = Column(String, unique=True, nullable=False)
+    username = Column(String, nullable=True)
+    x_username = Column(String, nullable=True)
+
+    # Performance stats (updated periodically)
+    total_pnl = Column(Float, default=0.0)
+    total_volume = Column(Float, default=0.0)
+    win_rate = Column(Float, nullable=True)
+    total_trades = Column(Integer, default=0)
+
+    # Tracking metadata
+    is_tracked = Column(Boolean, default=True)  # Actively tracking
+    leaderboard_rank = Column(Integer, nullable=True)
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_trade_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    trades = relationship("SmartTrade", back_populates="wallet")
+
+
+class SmartTrade(Base):
+    """Trades from tracked smart wallets."""
+
+    __tablename__ = "smart_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    wallet_id = Column(Integer, ForeignKey("smart_wallets.id"), nullable=False)
+    transaction_hash = Column(String, unique=True, nullable=False)
+
+    # Trade details
+    condition_id = Column(String, nullable=False)
+    market_title = Column(Text, nullable=False)
+    event_slug = Column(String, nullable=True)
+    side = Column(String, nullable=False)  # BUY or SELL
+    outcome = Column(String, nullable=False)  # Yes or No
+    size = Column(Float, nullable=False)  # Token amount
+    usdc_size = Column(Float, nullable=False)  # USD value
+    price = Column(Float, nullable=False)
+
+    # Timestamps
+    timestamp = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Alert tracking
+    alert_sent = Column(Boolean, default=False)
+
+    # Relationship
+    wallet = relationship("SmartWallet", back_populates="trades")
