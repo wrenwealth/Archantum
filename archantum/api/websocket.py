@@ -71,6 +71,7 @@ class PolymarketWebSocket:
     _running: bool = False
     _reconnect_task: asyncio.Task | None = field(default=None, repr=False)
     _receive_task: asyncio.Task | None = field(default=None, repr=False)
+    _ping_task: asyncio.Task | None = field(default=None, repr=False)
     stats: WebSocketStats = field(default_factory=WebSocketStats)
 
     # Reconnection settings
@@ -109,6 +110,9 @@ class PolymarketWebSocket:
             # Start receive loop
             self._receive_task = asyncio.create_task(self._receive_loop())
 
+            # Start ping loop to keep connection alive
+            self._ping_task = asyncio.create_task(self._ping_loop())
+
             # Resubscribe to markets if any
             if self._subscribed_markets:
                 await self._resubscribe_all()
@@ -138,6 +142,14 @@ class PolymarketWebSocket:
             except asyncio.CancelledError:
                 pass
             self._reconnect_task = None
+
+        if self._ping_task:
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
+            self._ping_task = None
 
         if self._ws:
             try:
@@ -181,11 +193,11 @@ class PolymarketWebSocket:
 
         self._subscribed_markets.add(market_id)
 
-        # Subscribe message format for Polymarket WebSocket
+        # Subscribe message format for Polymarket CLOB WebSocket
+        # See: https://docs.polymarket.com/developers/CLOB/websocket/market-channel
         subscribe_msg = {
-            "type": "subscribe",
-            "channel": "market",
             "assets_ids": [a["asset_id"] for a in assets],
+            "type": "market",
         }
 
         try:
@@ -196,17 +208,56 @@ class PolymarketWebSocket:
             self.stats.errors += 1
 
     async def subscribe_markets(self, markets: list[dict]) -> None:
-        """Subscribe to multiple markets.
+        """Subscribe to multiple markets in a single batch.
 
         Args:
             markets: List of dicts with 'id', 'yes_token', 'no_token' keys
         """
+        if not self._ws or not self.stats.is_connected:
+            # Store for later subscription
+            for market in markets:
+                market_id = market.get("id", "")
+                yes_token = market.get("yes_token")
+                no_token = market.get("no_token")
+                self._subscribed_markets.add(market_id)
+                if yes_token:
+                    self._token_to_market[yes_token] = (market_id, "yes")
+                if no_token:
+                    self._token_to_market[no_token] = (market_id, "no")
+            return
+
+        # Collect all token IDs for batch subscription
+        all_tokens = []
         for market in markets:
-            await self.subscribe_market(
-                market_id=market.get("id", ""),
-                yes_token=market.get("yes_token"),
-                no_token=market.get("no_token"),
-            )
+            market_id = market.get("id", "")
+            yes_token = market.get("yes_token")
+            no_token = market.get("no_token")
+
+            self._subscribed_markets.add(market_id)
+            if yes_token:
+                self._token_to_market[yes_token] = (market_id, "yes")
+                all_tokens.append(yes_token)
+            if no_token:
+                self._token_to_market[no_token] = (market_id, "no")
+                all_tokens.append(no_token)
+
+        if not all_tokens:
+            return
+
+        # Batch subscribe (max 500 per message)
+        batch_size = 500
+        for i in range(0, len(all_tokens), batch_size):
+            batch = all_tokens[i:i + batch_size]
+            subscribe_msg = {
+                "assets_ids": batch,
+                "type": "market",
+            }
+            try:
+                await self._ws.send(json.dumps(subscribe_msg))
+                console.print(f"[dim]Subscribed to {len(batch)} tokens (batch {i // batch_size + 1})[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Failed to subscribe batch: {e}[/yellow]")
+                self.stats.errors += 1
 
     def get_cached_price(self, market_id: str, outcome: str = "yes") -> PriceUpdate | None:
         """Get cached price for a market outcome."""
@@ -235,8 +286,31 @@ class PolymarketWebSocket:
                 console.print(f"[red]WebSocket receive error: {e}[/red]")
                 self.stats.errors += 1
 
+    async def _ping_loop(self) -> None:
+        """Send PING messages to keep connection alive."""
+        while self._running and self._ws:
+            try:
+                await asyncio.sleep(10)  # Ping every 10 seconds
+                if self._ws and self.stats.is_connected:
+                    await self._ws.send("PING")
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass  # Ignore ping errors
+
     async def _handle_message(self, raw_message: str) -> None:
         """Handle incoming WebSocket message."""
+        # Handle text responses (PONG, errors, etc.)
+        if raw_message == "PONG":
+            return  # Ping acknowledgment
+        if raw_message in ("INVALID OPERATION", "INVALID_OPERATION"):
+            # Server rejected subscription - likely wrong format or invalid token
+            self.stats.errors += 1
+            return
+        if not raw_message.startswith("{") and not raw_message.startswith("["):
+            # Not JSON, ignore other text messages
+            return
+
         try:
             data = json.loads(raw_message)
             self.stats.messages_received += 1
@@ -254,7 +328,7 @@ class PolymarketWebSocket:
                 await self._process_single_message(data)
 
         except json.JSONDecodeError:
-            console.print(f"[yellow]Invalid JSON: {raw_message[:100]}[/yellow]")
+            pass  # Silently ignore malformed JSON
         except Exception as e:
             console.print(f"[yellow]Error handling message: {e}[/yellow]")
 
