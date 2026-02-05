@@ -10,7 +10,7 @@ import click
 from rich.console import Console
 
 from archantum.config import settings
-from archantum.api import GammaClient, CLOBClient
+from archantum.api import GammaClient, CLOBClient, KalshiClient
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
 from archantum.db import Database
@@ -18,6 +18,7 @@ from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, 
 from archantum.analysis.indicators import TechnicalIndicatorCalculator
 from archantum.analysis.confluence import ConfluenceAnalyzer
 from archantum.analysis.scoring import MarketScorer
+from archantum.analysis.cross_platform import CrossPlatformAnalyzer
 from archantum.data import DataSourceManager, PriceValidator
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
@@ -63,10 +64,14 @@ class PollingEngine:
         # Market scorer
         self.market_scorer: MarketScorer | None = None  # Initialized in init()
 
+        # Cross-platform arbitrage
+        self.cross_platform_analyzer = CrossPlatformAnalyzer()
+
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
         self._ta_poll_count = 0  # Track polls for TA calculation
         self._scoring_poll_count = 0  # Track polls for market scoring
+        self._cross_platform_poll_count = 0  # Track polls for cross-platform arbitrage
 
     async def init(self):
         """Initialize the engine."""
@@ -139,6 +144,7 @@ class PollingEngine:
             "confluence_signals": 0,
             "price_discrepancies": 0,
             "market_scores": 0,
+            "cross_platform_arbs": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -282,8 +288,42 @@ class PollingEngine:
                 except Exception as e:
                     console.print(f"[yellow]Market scoring error: {e}[/yellow]")
 
-            # 9. Price validation across sources (WebSocket vs REST)
-            # (Renumbered from 8)
+            # 9. Cross-platform arbitrage (Polymarket vs Kalshi) - every 5 polls
+            cross_platform_opps = []
+            self._cross_platform_poll_count += 1
+            if self._cross_platform_poll_count >= 5:
+                self._cross_platform_poll_count = 0
+                console.print("[cyan]Checking cross-platform arbitrage (Kalshi)...[/cyan]")
+                try:
+                    async with KalshiClient() as kalshi_client:
+                        # Fetch Kalshi markets
+                        kalshi_markets = await kalshi_client.get_all_open_markets(max_markets=300)
+                        console.print(f"[dim]Fetched {len(kalshi_markets)} Kalshi markets[/dim]")
+
+                        if kalshi_markets:
+                            # Match markets between platforms
+                            matches = self.cross_platform_analyzer.match_markets(markets, kalshi_markets)
+                            console.print(f"[dim]Found {len(matches)} potential market matches[/dim]")
+
+                            if matches:
+                                # Get Kalshi prices
+                                kalshi_prices = {
+                                    m.ticker: m.to_price_data()
+                                    for m in kalshi_markets
+                                }
+
+                                # Check for arbitrage
+                                cross_platform_opps = self.cross_platform_analyzer.analyze(
+                                    matches, all_prices, kalshi_prices
+                                )
+                                results["cross_platform_arbs"] = len(cross_platform_opps)
+
+                                if cross_platform_opps:
+                                    console.print(f"[bold green]Found {len(cross_platform_opps)} cross-platform opportunities![/bold green]")
+                except Exception as e:
+                    console.print(f"[yellow]Cross-platform analysis error: {e}[/yellow]")
+
+            # 10. Price validation across sources (WebSocket vs REST)
             price_discrepancies = []
             if settings.ws_enabled and self.source_manager.websocket.stats.is_connected:
                 # Get fresh REST prices for validation
@@ -342,6 +382,12 @@ class PollingEngine:
             # Send confluence alerts
             for signal in confluence_signals:
                 alert = self.alerter.format_confluence_alert(signal)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            # Send cross-platform arbitrage alerts
+            for cross_opp in cross_platform_opps:
+                alert = self.alerter.format_cross_platform_alert(cross_opp)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -511,6 +557,7 @@ class PollingEngine:
                 console.print(f"  Confluence signals: {results['confluence_signals']}")
                 console.print(f"  Price discrepancies: {results['price_discrepancies']}")
                 console.print(f"  Market scores: {results['market_scores']}")
+                console.print(f"  Cross-platform arbs: {results['cross_platform_arbs']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")
