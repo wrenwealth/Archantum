@@ -142,12 +142,35 @@ class TelegramAlerter:
         total_cents = int(opp.total_price * 100)
         profit_cents = 100 - total_cents
 
+        # Resolution timing info
+        resolution_text = ""
+        if opp.days_until_resolution is not None:
+            days = opp.days_until_resolution
+            if days < 1:
+                hours = days * 24
+                time_str = f"{hours:.1f} hours"
+                time_emoji = "⚡"  # Very soon
+            elif days < 7:
+                time_str = f"{days:.1f} days"
+                time_emoji = "🔥"  # Soon
+            elif days < 30:
+                time_str = f"{days:.0f} days"
+                time_emoji = "📅"
+            else:
+                time_str = f"{days/30:.1f} months"
+                time_emoji = "📆"
+
+            annual_return = opp.annualized_return_pct
+            apy_text = f" ({annual_return:.0f}% APY)" if annual_return and annual_return < 10000 else ""
+
+            resolution_text = f"\n{time_emoji} <b>Resolves in:</b> {time_str}{apy_text}"
+
         message = f"""{emoji} <b>{title}</b>
 
 <b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
 
 <b>Yes:</b> {yes_cents}¢ + <b>No:</b> {no_cents}¢ = <b>{total_cents}¢</b>
-<b>Profit:</b> {profit_cents}¢/share (guaranteed)
+<b>Profit:</b> {profit_cents}¢/share (guaranteed){resolution_text}
 
 <b>Estimated Returns:</b>
   $100 → ${profit_100:.2f} profit
