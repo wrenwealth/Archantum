@@ -830,12 +830,13 @@ Use /help to see all available commands."""
 
                 rank_str = f"#{w['rank']}" if w['rank'] else ""
                 emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                profile_url = f"https://polymarket.com/profile/{w['address']}"
 
-                text += f"{emoji} <b>{w['username']}</b> {rank_str}\n"
+                text += f"{emoji} <a href='{profile_url}'><b>{w['username']}</b></a> {rank_str}\n"
                 text += f"   PnL: {pnl_str} | Trades: {w['total_trades']}\n"
-                text += f"   <code>{w['address_short']}</code>\n\n"
+                text += f"   <code>{w['address']}</code>\n\n"
 
-            text += "<i>Use /wallet &lt;address&gt; for details</i>"
+            text += "<i>Tap username for Polymarket profile</i>"
             await update.message.reply_text(text, parse_mode="HTML")
 
         except Exception as e:
@@ -869,9 +870,10 @@ Use /help to see all available commands."""
                 pnl_str = f"${pnl:,.0f}"
 
             rank_str = f"#{stats['rank']}" if stats['rank'] else "Unranked"
+            profile_url = f"https://polymarket.com/profile/{stats['address']}"
 
-            text = f"🧠 <b>Wallet: {stats['username']}</b>\n\n"
-            text += f"<b>Address:</b> <code>{stats['address'][:20]}...</code>\n"
+            text = f"🧠 <b>Wallet: <a href='{profile_url}'>{stats['username']}</a></b>\n\n"
+            text += f"<b>Address:</b>\n<code>{stats['address']}</code>\n"
             text += f"<b>Rank:</b> {rank_str}\n"
             text += f"<b>Total PnL:</b> {pnl_str}\n"
             text += f"<b>Total Trades:</b> {stats['total_trades']}\n"

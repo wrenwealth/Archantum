@@ -308,7 +308,8 @@ class TelegramAlerter:
         """Format a smart money trade alert."""
         emoji = "🧠"
         side_emoji = "🟢" if alert.side == "BUY" else "🔴"
-        link = alert.polymarket_url or "N/A"
+        market_link = alert.polymarket_url or "N/A"
+        profile_link = f"https://polymarket.com/profile/{alert.wallet_address}"
 
         # Format PnL
         pnl_str = f"${alert.wallet_pnl:,.0f}"
@@ -321,15 +322,16 @@ class TelegramAlerter:
 
         message = f"""{emoji} <b>SMART MONEY ALERT</b>
 
-<b>Trader:</b> {alert.username} ({rank_str})
+<b>Trader:</b> <a href='{profile_link}'>{alert.username}</a> ({rank_str})
 <b>PnL:</b> {pnl_str}
+<b>Wallet:</b> <code>{alert.wallet_address}</code>
 
 {side_emoji} <b>{alert.side}</b> {alert.outcome} @ ${alert.price:.2f}
 <b>Size:</b> ${alert.usdc_size:,.0f}
 
 <b>Market:</b> {alert.market_title[:100]}{'...' if len(alert.market_title) > 100 else ''}
 
-<b>Link:</b> {link}"""
+<b>Link:</b> {market_link}"""
 
         return AlertMessage(
             market_id=alert.event_slug or "smart_money",
