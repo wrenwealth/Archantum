@@ -81,11 +81,21 @@ class ResolutionAnalyzer:
                 # Check which alert threshold we've crossed
                 for alert_hour in sorted(self.alert_hours, reverse=True):
                     if hours_until <= alert_hour:
-                        # Check if we've already alerted for this threshold
+                        # Check in-memory cache first (fast path)
                         if market.id not in self._alerted_markets:
                             self._alerted_markets[market.id] = set()
 
-                        if alert_hour not in self._alerted_markets[market.id]:
+                        if alert_hour in self._alerted_markets[market.id]:
+                            break  # Already alerted in this session
+
+                        # Check database for persistent tracking (survives restarts)
+                        already_alerted = await self.db.has_recent_resolution_alert(
+                            market_id=market.id,
+                            hours_threshold=alert_hour,
+                            cooldown_hours=max(12, alert_hour),  # Cooldown = max of 12h or threshold
+                        )
+
+                        if not already_alerted:
                             # New alert needed
                             alert = ResolutionAlert(
                                 market_id=market.id,

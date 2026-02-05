@@ -882,3 +882,46 @@ class Database:
             result = await session.execute(delete(SmartWallet))
             await session.commit()
             return result.rowcount
+
+    async def has_recent_resolution_alert(
+        self,
+        market_id: str,
+        hours_threshold: int,
+        cooldown_hours: int = 12,
+    ) -> bool:
+        """Check if a resolution alert was sent for this market+threshold recently.
+
+        Args:
+            market_id: The market ID
+            hours_threshold: The resolution hour threshold (e.g., 48, 24, 6, 1)
+            cooldown_hours: Don't alert again within this many hours
+
+        Returns:
+            True if alert was recently sent, False otherwise
+        """
+        cutoff = datetime.utcnow() - timedelta(hours=cooldown_hours)
+
+        async with self.async_session() as session:
+            # Check for resolution alerts for this market since cutoff
+            # We store the threshold in details JSON
+            result = await session.execute(
+                select(Alert)
+                .where(Alert.market_id == market_id)
+                .where(Alert.alert_type == "resolution")
+                .where(Alert.timestamp >= cutoff)
+            )
+            alerts = list(result.scalars().all())
+
+            # Check if any alert has this threshold or a smaller one
+            for alert in alerts:
+                if alert.details:
+                    try:
+                        details = json.loads(alert.details)
+                        alert_hours = details.get("hours_until_resolution", 999)
+                        # If we already alerted for same or closer resolution, skip
+                        if alert_hours <= hours_threshold + 1:  # +1 for small timing differences
+                            return True
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            return False

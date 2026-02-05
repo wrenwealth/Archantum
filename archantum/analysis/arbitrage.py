@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from archantum.config import settings
 from archantum.api.clob import PriceData
@@ -32,6 +33,8 @@ class ArbitrageOpportunity:
     arbitrage_pct: float
     direction: str  # 'under' or 'over'
     tier: ArbitrageTier = ArbitrageTier.STANDARD
+    end_date: datetime | None = None
+    volume_24hr: float | None = None
 
     @property
     def potential_profit_pct(self) -> float:
@@ -44,6 +47,49 @@ class ArbitrageOpportunity:
         if self.direction == "under":
             return (1.0 - self.total_price) * 100  # cents
         return 0.0  # Can't profit from overpriced markets directly
+
+    @property
+    def days_until_resolution(self) -> float | None:
+        """Days until market resolves."""
+        if not self.end_date:
+            return None
+        now = datetime.utcnow()
+        delta = self.end_date - now
+        days = delta.total_seconds() / 86400  # seconds in a day
+        return max(0, days)
+
+    @property
+    def annualized_return_pct(self) -> float | None:
+        """Calculate annualized return based on resolution date.
+
+        Formula: (profit_pct / days) * 365
+        Higher = better capital efficiency
+        """
+        days = self.days_until_resolution
+        if days is None or days <= 0:
+            return None
+        # Profit percentage
+        profit_pct = self.arbitrage_pct
+        # Annualized: (profit / days) * 365
+        return (profit_pct / days) * 365
+
+    @property
+    def capital_efficiency_score(self) -> float:
+        """Score combining profit % and time to resolution.
+
+        Higher score = better opportunity
+        - Considers both raw profit and time value
+        - Markets without end_date get base score from profit only
+        """
+        base_score = self.arbitrage_pct * 10  # Base from profit %
+
+        annual_return = self.annualized_return_pct
+        if annual_return is not None:
+            # Bonus for high annualized returns (capped at 1000% APY contribution)
+            time_bonus = min(annual_return / 10, 100)
+            return base_score + time_bonus
+
+        return base_score
 
     def calculate_profit(self, position_size: float) -> float:
         """Calculate estimated profit for a given position size.
@@ -83,6 +129,11 @@ class ArbitrageOpportunity:
             "profit_100": self.calculate_profit(100),
             "profit_500": self.calculate_profit(500),
             "profit_1000": self.calculate_profit(1000),
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "days_until_resolution": self.days_until_resolution,
+            "annualized_return_pct": self.annualized_return_pct,
+            "capital_efficiency_score": self.capital_efficiency_score,
+            "volume_24hr": self.volume_24hr,
         }
 
 
@@ -115,14 +166,17 @@ class ArbitrageAnalyzer:
             if opp:
                 opportunities.append(opp)
 
-        # Sort by tier (alpha first), then by arbitrage percentage
+        # Sort by tier first, then by capital efficiency score (considers both profit % and time to resolution)
+        # This prioritizes:
+        # 1. Higher tier opportunities (ALPHA > HIGH_VALUE > STANDARD)
+        # 2. Within same tier: higher capital efficiency (profit % + time value)
         tier_order = {
             ArbitrageTier.ALPHA: 0,
             ArbitrageTier.HIGH_VALUE: 1,
             ArbitrageTier.STANDARD: 2,
         }
         opportunities.sort(
-            key=lambda x: (tier_order.get(x.tier, 3), -x.arbitrage_pct)
+            key=lambda x: (tier_order.get(x.tier, 3), -x.capital_efficiency_score)
         )
         return opportunities
 
@@ -148,6 +202,16 @@ class ArbitrageAnalyzer:
         arbitrage_pct = (1.0 - total) * 100
         direction = "under"
 
+        # Parse end_date if available
+        end_date = None
+        if market.end_date:
+            try:
+                # Handle ISO format with or without timezone
+                end_date_str = market.end_date.replace("Z", "+00:00")
+                end_date = datetime.fromisoformat(end_date_str).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                pass
+
         return ArbitrageOpportunity(
             market_id=market.id,
             question=market.question,
@@ -159,6 +223,8 @@ class ArbitrageAnalyzer:
             arbitrage_pct=arbitrage_pct,
             direction=direction,
             tier=tier,
+            end_date=end_date,
+            volume_24hr=market.volume_24hr,
         )
 
     def _get_tier(self, total_price: float) -> ArbitrageTier:
