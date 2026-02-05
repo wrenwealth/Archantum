@@ -19,6 +19,7 @@ from archantum.analysis.resolution import ResolutionAlert
 from archantum.analysis.accuracy import AccuracyTracker
 from archantum.analysis.smartmoney import SmartMoneyAlert
 from archantum.analysis.confluence import ConfluenceSignal
+from archantum.analysis.cross_platform import CrossPlatformArbitrage
 from archantum.data.validator import ValidationResult
 
 
@@ -504,6 +505,77 @@ class TelegramAlerter:
             alert_type="data_source",
             message=message,
             details={"source": source, "status": status, **(details or {})},
+        )
+
+    def format_cross_platform_alert(self, opp: CrossPlatformArbitrage) -> AlertMessage:
+        """Format a cross-platform arbitrage opportunity as an alert."""
+        from archantum.analysis.cross_platform import CrossPlatformTier
+
+        # Tiered formatting
+        if opp.tier == CrossPlatformTier.ALPHA:
+            emoji = "🌐🚨🚨"
+            title = "CROSS-PLATFORM ALPHA"
+            warning = "\n\n⚠️ <b>HIGH SPREAD - verify market match accuracy before trading</b>"
+        elif opp.tier == CrossPlatformTier.HIGH_VALUE:
+            emoji = "🌐🔥🔥"
+            title = "CROSS-PLATFORM HIGH VALUE"
+            warning = ""
+        else:
+            emoji = "🌐🔥"
+            title = "CROSS-PLATFORM ARBITRAGE"
+            warning = ""
+
+        # Format prices
+        poly_yes_cents = int(opp.poly_yes_price * 100)
+        poly_no_cents = int(opp.poly_no_price * 100)
+        kalshi_yes_cents = int(opp.kalshi_yes_price * 100)
+        kalshi_no_cents = int(opp.kalshi_no_price * 100)
+
+        buy_price_cents = int(opp.buy_price * 100)
+        sell_price_cents = int(opp.sell_price * 100)
+
+        # Calculate profits
+        profit_100 = opp.calculate_profit(100)
+        profit_500 = opp.calculate_profit(500)
+        profit_1000 = opp.calculate_profit(1000)
+
+        # Match confidence indicator
+        if opp.match_score >= 0.9:
+            match_indicator = "✅ High"
+        elif opp.match_score >= 0.8:
+            match_indicator = "🟡 Medium"
+        else:
+            match_indicator = "⚠️ Low"
+
+        message = f"""{emoji} <b>{title}</b>
+
+<b>Polymarket:</b> {opp.polymarket_question[:80]}{'...' if len(opp.polymarket_question) > 80 else ''}
+Yes: {poly_yes_cents}¢ / No: {poly_no_cents}¢
+
+<b>Kalshi:</b> {opp.kalshi_title[:80]}{'...' if len(opp.kalshi_title) > 80 else ''}
+Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
+
+<b>Strategy:</b>
+📥 BUY {opp.buy_side.upper()} on {opp.buy_platform.title()} @ {buy_price_cents}¢
+📤 SELL {opp.sell_side.upper()} on {opp.sell_platform.title()} @ {sell_price_cents}¢
+
+<b>Spread:</b> {opp.spread_pct:.1f}% (after ~3% fees)
+<b>Match Confidence:</b> {match_indicator} ({opp.match_score:.0%})
+
+<b>Est. Profit (net of fees):</b>
+  $100 → ${profit_100:.2f}
+  $500 → ${profit_500:.2f}
+  $1000 → ${profit_1000:.2f}{warning}
+
+<b>Links:</b>
+• <a href="{opp.polymarket_url}">Polymarket</a>
+• <a href="{opp.kalshi_url}">Kalshi</a>"""
+
+        return AlertMessage(
+            market_id=f"cross_{opp.polymarket_id}_{opp.kalshi_ticker}",
+            alert_type="cross_platform",
+            message=message,
+            details=opp.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:
