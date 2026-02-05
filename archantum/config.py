@@ -46,6 +46,22 @@ class Settings(BaseSettings):
     smart_money_min_trade_usdc: float = Field(default=500.0, description="Min trade size for alerts")
     smart_money_top_wallets: int = Field(default=20, description="Number of top wallets to track")
 
+    # WebSocket configuration
+    ws_enabled: bool = Field(default=True, description="Enable WebSocket real-time data")
+    ws_reconnect_max_attempts: int = Field(default=10, description="Max reconnection attempts")
+    ws_reconnect_delay: float = Field(default=5.0, description="Initial reconnect delay in seconds")
+
+    # Data source failover
+    cache_max_age_seconds: float = Field(default=60.0, description="Max age for cached prices")
+    price_discrepancy_threshold: float = Field(default=0.02, description="Significant discrepancy threshold (2%)")
+
+    # Technical analysis
+    ta_enabled: bool = Field(default=True, description="Enable technical analysis")
+    ta_poll_frequency: int = Field(default=5, description="Calculate TA every N polls")
+    confluence_alert_threshold: float = Field(default=60.0, description="Min confluence score for alerts")
+    rsi_oversold: float = Field(default=30.0, description="RSI oversold threshold")
+    rsi_overbought: float = Field(default=70.0, description="RSI overbought threshold")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

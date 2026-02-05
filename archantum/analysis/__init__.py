@@ -9,6 +9,8 @@ from .resolution import ResolutionAnalyzer, ResolutionAlert
 from .historical import HistoricalAnalyzer, PriceHistory, BacktestResult
 from .accuracy import AccuracyTracker, AccuracyResult
 from .smartmoney import SmartMoneyTracker, SmartMoneyAlert
+from .indicators import TechnicalIndicatorCalculator, IndicatorValues
+from .confluence import ConfluenceAnalyzer, ConfluenceSignal
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -30,4 +32,8 @@ __all__ = [
     "AccuracyResult",
     "SmartMoneyTracker",
     "SmartMoneyAlert",
+    "TechnicalIndicatorCalculator",
+    "IndicatorValues",
+    "ConfluenceAnalyzer",
+    "ConfluenceSignal",
 ]
