@@ -17,6 +17,7 @@ from archantum.db import Database
 from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker, SmartMoneyTracker
 from archantum.analysis.indicators import TechnicalIndicatorCalculator
 from archantum.analysis.confluence import ConfluenceAnalyzer
+from archantum.analysis.scoring import MarketScorer
 from archantum.data import DataSourceManager, PriceValidator
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
@@ -59,14 +60,22 @@ class PollingEngine:
         self.confluence_analyzer = ConfluenceAnalyzer(self.db)
         self.price_validator = PriceValidator(self.db)
 
+        # Market scorer
+        self.market_scorer: MarketScorer | None = None  # Initialized in init()
+
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
         self._ta_poll_count = 0  # Track polls for TA calculation
+        self._scoring_poll_count = 0  # Track polls for market scoring
 
     async def init(self):
         """Initialize the engine."""
         await self.db.init_db()
         console.print("[green]Database initialized[/green]")
+
+        # Initialize market scorer (needs async session)
+        async with self.db.async_session() as session:
+            self.market_scorer = MarketScorer(session)
 
         # Initialize data source manager (WebSocket + REST fallback)
         await self.source_manager.initialize()
@@ -129,6 +138,7 @@ class PollingEngine:
             "smart_money_alerts": 0,
             "confluence_signals": 0,
             "price_discrepancies": 0,
+            "market_scores": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -248,7 +258,32 @@ class PollingEngine:
                     except Exception as e:
                         console.print(f"[yellow]TA analysis error: {e}[/yellow]")
 
-            # 8. Price validation across sources (WebSocket vs REST)
+            # 8. Market scoring (every 5 polls, same as smart money)
+            self._scoring_poll_count += 1
+            if self._scoring_poll_count >= 5:
+                self._scoring_poll_count = 0
+                console.print("[cyan]Scoring markets...[/cyan]")
+                try:
+                    async with self.db.async_session() as session:
+                        scorer = MarketScorer(session)
+                        market_scores = await scorer.score_markets(markets, all_prices)
+                        await session.commit()
+                        results["market_scores"] = len(market_scores)
+
+                        # Log top 5 markets
+                        if market_scores:
+                            top5 = market_scores[:5]
+                            console.print("[dim]Top 5 markets by score:[/dim]")
+                            for i, score in enumerate(top5, 1):
+                                console.print(
+                                    f"[dim]  {i}. [{score.rank_tier}] {score.total_score:.0f}/100 - "
+                                    f"{score.question[:40]}...[/dim]"
+                                )
+                except Exception as e:
+                    console.print(f"[yellow]Market scoring error: {e}[/yellow]")
+
+            # 9. Price validation across sources (WebSocket vs REST)
+            # (Renumbered from 8)
             price_discrepancies = []
             if settings.ws_enabled and self.source_manager.websocket.stats.is_connected:
                 # Get fresh REST prices for validation
@@ -310,12 +345,14 @@ class PollingEngine:
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
-            # Send price discrepancy alerts (only potential arbitrage)
+            # Log price discrepancies to console only (data sync warning, not real arbitrage)
             for discrepancy in price_discrepancies:
-                if discrepancy.potential_arbitrage:
-                    alert = self.alerter.format_price_discrepancy_alert(discrepancy)
-                    await self.alerter.send_alert(alert)
-                    results["alerts_sent"] += 1
+                if discrepancy.is_significant:
+                    console.print(
+                        f"[yellow]DATA SYNC WARNING: {discrepancy.question[:50]}... "
+                        f"WS={discrepancy.websocket_yes:.2f} vs REST={discrepancy.rest_yes:.2f} "
+                        f"({discrepancy.max_diff_pct:.1f}% diff)[/yellow]"
+                    )
 
             # Update dashboard
             self.dashboard.set_last_poll(datetime.utcnow())
@@ -466,6 +503,7 @@ class PollingEngine:
                 console.print(f"  Smart money alerts: {results['smart_money_alerts']}")
                 console.print(f"  Confluence signals: {results['confluence_signals']}")
                 console.print(f"  Price discrepancies: {results['price_discrepancies']}")
+                console.print(f"  Market scores: {results['market_scores']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

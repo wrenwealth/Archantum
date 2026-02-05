@@ -112,21 +112,47 @@ class TelegramAlerter:
         console.print(f"[bold yellow]{'=' * 50}[/bold yellow]\n")
 
     def format_arbitrage_alert(self, opp: ArbitrageOpportunity) -> AlertMessage:
-        """Format an arbitrage opportunity as an alert."""
-        emoji = "🚨"
-        direction_text = "underpriced" if opp.direction == "under" else "overpriced"
+        """Format an arbitrage opportunity as an alert with tiered formatting."""
+        from archantum.analysis.arbitrage import ArbitrageTier
+
         link = opp.polymarket_url or "N/A"
 
-        message = f"""{emoji} <b>ARBITRAGE OPPORTUNITY</b>
+        # Tiered formatting
+        if opp.tier == ArbitrageTier.ALPHA:
+            emoji = "🚨🚨🚨"
+            title = "ALPHA DETECTED"
+            warning = "\n\n⚠️ <b>VERIFY MARKET LEGITIMACY BEFORE TRADING</b> — gaps this large may indicate market error or low liquidity"
+        elif opp.tier == ArbitrageTier.HIGH_VALUE:
+            emoji = "🔥🔥"
+            title = "HIGH VALUE ARBITRAGE"
+            warning = ""
+        else:
+            emoji = "🔥"
+            title = "ARBITRAGE DETECTED"
+            warning = ""
 
-<b>Market:</b> {opp.question[:100]}...
+        # Calculate profits
+        profit_100 = opp.calculate_profit(100)
+        profit_500 = opp.calculate_profit(500)
+        profit_1000 = opp.calculate_profit(1000)
 
-<b>Yes Price:</b> ${opp.yes_price:.4f}
-<b>No Price:</b> ${opp.no_price:.4f}
-<b>Total:</b> ${opp.total_price:.4f} ({opp.arbitrage_pct:.1f}% gap)
+        # Format prices in cents for clarity
+        yes_cents = int(opp.yes_price * 100)
+        no_cents = int(opp.no_price * 100)
+        total_cents = int(opp.total_price * 100)
+        profit_cents = 100 - total_cents
 
-<b>Direction:</b> Market is {direction_text}
-<b>Potential profit:</b> {opp.potential_profit_pct:.1f}%
+        message = f"""{emoji} <b>{title}</b>
+
+<b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
+
+<b>Yes:</b> {yes_cents}¢ + <b>No:</b> {no_cents}¢ = <b>{total_cents}¢</b>
+<b>Profit:</b> {profit_cents}¢/share (guaranteed)
+
+<b>Estimated Returns:</b>
+  $100 → ${profit_100:.2f} profit
+  $500 → ${profit_500:.2f} profit
+  $1000 → ${profit_1000:.2f} profit{warning}
 
 <b>Link:</b> {link}"""
 

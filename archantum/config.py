@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     telegram_chat_id: Optional[str] = Field(default=None, alias="TELEGRAM_CHAT_ID")
 
     # Detection thresholds
-    arbitrage_threshold: float = Field(default=0.02, description="Arbitrage threshold (2%)")
+    arbitrage_threshold: float = Field(default=0.01, description="Arbitrage threshold (1% - Yes+No < 99¢)")
     price_move_threshold: float = Field(default=0.05, description="Price movement threshold (5%)")
 
     # Polling configuration

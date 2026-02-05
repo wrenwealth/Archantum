@@ -284,3 +284,28 @@ class PriceDiscrepancy(Base):
     max_diff_pct = Column(Float, nullable=True)
     is_significant = Column(Boolean, default=False)  # > 2%
     potential_arbitrage = Column(Boolean, default=False)  # > 3%
+
+
+class MarketScore(Base):
+    """Market scoring and ranking (0-100 scale)."""
+
+    __tablename__ = "market_scores"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, ForeignKey("markets.id"), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    # Individual scores (0-100)
+    volume_score = Column(Float, default=0.0)  # 24h volume score
+    volume_trend_score = Column(Float, default=0.0)  # Volume trending up/down
+    liquidity_score = Column(Float, default=0.0)  # Liquidity depth
+    volatility_score = Column(Float, default=0.0)  # Price volatility
+    spread_score = Column(Float, default=0.0)  # Yes/No spread tightness
+    activity_score = Column(Float, default=0.0)  # Recent trading activity
+
+    # Composite score
+    total_score = Column(Float, default=0.0)  # Weighted average 0-100
+
+    # Tracking changes
+    previous_score = Column(Float, nullable=True)
+    score_change = Column(Float, nullable=True)  # Positive = improving
