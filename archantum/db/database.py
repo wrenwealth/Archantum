@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
@@ -861,3 +861,16 @@ class Database:
                 .limit(limit)
             )
             return list(result.scalars().all())
+
+    async def clear_smart_wallets(self) -> int:
+        """Clear all smart wallets and their trades.
+
+        Returns number of wallets deleted.
+        """
+        async with self.async_session() as session:
+            # First delete all trades
+            await session.execute(delete(SmartTrade))
+            # Then delete all wallets
+            result = await session.execute(delete(SmartWallet))
+            await session.commit()
+            return result.rowcount
