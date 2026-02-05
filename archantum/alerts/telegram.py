@@ -17,6 +17,7 @@ from archantum.analysis.whale import WhaleActivity
 from archantum.analysis.new_market import NewMarket
 from archantum.analysis.resolution import ResolutionAlert
 from archantum.analysis.accuracy import AccuracyTracker
+from archantum.analysis.smartmoney import SmartMoneyAlert
 
 
 console = Console()
@@ -301,6 +302,40 @@ class TelegramAlerter:
             alert_type="resolution",
             message=message,
             details=resolution.to_dict(),
+        )
+
+    def format_smart_money_alert(self, alert: SmartMoneyAlert) -> AlertMessage:
+        """Format a smart money trade alert."""
+        emoji = "🧠"
+        side_emoji = "🟢" if alert.side == "BUY" else "🔴"
+        link = alert.polymarket_url or "N/A"
+
+        # Format PnL
+        pnl_str = f"${alert.wallet_pnl:,.0f}"
+        if alert.wallet_pnl >= 100000:
+            pnl_str = f"${alert.wallet_pnl/1000:.0f}K"
+        if alert.wallet_pnl >= 1000000:
+            pnl_str = f"${alert.wallet_pnl/1000000:.1f}M"
+
+        rank_str = f"#{alert.wallet_rank}" if alert.wallet_rank else "Unranked"
+
+        message = f"""{emoji} <b>SMART MONEY ALERT</b>
+
+<b>Trader:</b> {alert.username} ({rank_str})
+<b>PnL:</b> {pnl_str}
+
+{side_emoji} <b>{alert.side}</b> {alert.outcome} @ ${alert.price:.2f}
+<b>Size:</b> ${alert.usdc_size:,.0f}
+
+<b>Market:</b> {alert.market_title[:100]}{'...' if len(alert.market_title) > 100 else ''}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=alert.event_slug or "smart_money",
+            alert_type="smart_money",
+            message=message,
+            details=alert.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:

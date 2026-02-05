@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
-from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome
+from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade
 from archantum.api.gamma import GammaMarket
 from archantum.api.clob import PriceData
 
@@ -690,5 +690,174 @@ class Database:
         async with self.async_session() as session:
             result = await session.execute(
                 select(Market).where(Market.event_id == event_id)
+            )
+            return list(result.scalars().all())
+
+    # Smart Wallet operations
+    async def upsert_smart_wallet(
+        self,
+        wallet_address: str,
+        username: str | None = None,
+        x_username: str | None = None,
+        total_pnl: float = 0.0,
+        total_volume: float = 0.0,
+        leaderboard_rank: int | None = None,
+    ) -> SmartWallet:
+        """Insert or update a smart wallet."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartWallet).where(SmartWallet.wallet_address == wallet_address)
+            )
+            wallet = result.scalar_one_or_none()
+
+            if wallet:
+                if username:
+                    wallet.username = username
+                if x_username:
+                    wallet.x_username = x_username
+                wallet.total_pnl = total_pnl
+                wallet.total_volume = total_volume
+                if leaderboard_rank:
+                    wallet.leaderboard_rank = leaderboard_rank
+                wallet.last_updated = datetime.utcnow()
+            else:
+                wallet = SmartWallet(
+                    wallet_address=wallet_address,
+                    username=username,
+                    x_username=x_username,
+                    total_pnl=total_pnl,
+                    total_volume=total_volume,
+                    leaderboard_rank=leaderboard_rank,
+                )
+                session.add(wallet)
+
+            await session.commit()
+            await session.refresh(wallet)
+            return wallet
+
+    async def get_smart_wallet(self, wallet_address: str) -> SmartWallet | None:
+        """Get a smart wallet by address."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartWallet).where(SmartWallet.wallet_address == wallet_address)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_tracked_wallets(self, limit: int = 50) -> list[SmartWallet]:
+        """Get all actively tracked wallets ordered by PnL."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartWallet)
+                .where(SmartWallet.is_tracked == True)
+                .order_by(SmartWallet.total_pnl.desc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def save_smart_trade(
+        self,
+        wallet_id: int,
+        transaction_hash: str,
+        condition_id: str,
+        market_title: str,
+        event_slug: str | None,
+        side: str,
+        outcome: str,
+        size: float,
+        usdc_size: float,
+        price: float,
+        timestamp: datetime,
+    ) -> SmartTrade | None:
+        """Save a smart trade. Returns None if trade already exists."""
+        async with self.async_session() as session:
+            # Check if trade already exists
+            result = await session.execute(
+                select(SmartTrade).where(SmartTrade.transaction_hash == transaction_hash)
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                return None
+
+            trade = SmartTrade(
+                wallet_id=wallet_id,
+                transaction_hash=transaction_hash,
+                condition_id=condition_id,
+                market_title=market_title,
+                event_slug=event_slug,
+                side=side,
+                outcome=outcome,
+                size=size,
+                usdc_size=usdc_size,
+                price=price,
+                timestamp=timestamp,
+            )
+            session.add(trade)
+            await session.commit()
+            await session.refresh(trade)
+
+            # Update wallet last_trade_at
+            wallet_result = await session.execute(
+                select(SmartWallet).where(SmartWallet.id == wallet_id)
+            )
+            wallet = wallet_result.scalar_one_or_none()
+            if wallet:
+                wallet.last_trade_at = timestamp
+                wallet.total_trades = (wallet.total_trades or 0) + 1
+                await session.commit()
+
+            return trade
+
+    async def get_recent_smart_trades(
+        self,
+        limit: int = 50,
+        min_usdc: float = 100.0,
+    ) -> list[tuple[SmartTrade, SmartWallet]]:
+        """Get recent trades from smart wallets."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartTrade, SmartWallet)
+                .join(SmartWallet)
+                .where(SmartTrade.usdc_size >= min_usdc)
+                .order_by(SmartTrade.timestamp.desc())
+                .limit(limit)
+            )
+            return list(result.all())
+
+    async def get_unsent_smart_trades(self, min_usdc: float = 500.0) -> list[tuple[SmartTrade, SmartWallet]]:
+        """Get trades that haven't been alerted yet."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartTrade, SmartWallet)
+                .join(SmartWallet)
+                .where(SmartTrade.alert_sent == False)
+                .where(SmartTrade.usdc_size >= min_usdc)
+                .order_by(SmartTrade.timestamp.desc())
+            )
+            return list(result.all())
+
+    async def mark_trade_alerted(self, trade_id: int) -> None:
+        """Mark a trade as alerted."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartTrade).where(SmartTrade.id == trade_id)
+            )
+            trade = result.scalar_one_or_none()
+            if trade:
+                trade.alert_sent = True
+                await session.commit()
+
+    async def get_wallet_trades(
+        self,
+        wallet_address: str,
+        limit: int = 20,
+    ) -> list[SmartTrade]:
+        """Get recent trades for a specific wallet."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartTrade)
+                .join(SmartWallet)
+                .where(SmartWallet.wallet_address == wallet_address)
+                .order_by(SmartTrade.timestamp.desc())
+                .limit(limit)
             )
             return list(result.scalars().all())

@@ -2,5 +2,6 @@
 
 from .gamma import GammaClient
 from .clob import CLOBClient
+from .data import DataAPIClient
 
-__all__ = ["GammaClient", "CLOBClient"]
+__all__ = ["GammaClient", "CLOBClient", "DataAPIClient"]
