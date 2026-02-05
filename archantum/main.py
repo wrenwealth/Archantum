@@ -414,17 +414,24 @@ class PollingEngine:
         self,
         markets: list[GammaMarket],
         market_ids: set[str],
+        max_samples: int = 10,
     ) -> dict[str, "PriceResult"]:
-        """Fetch REST prices for a subset of markets for validation."""
+        """Fetch REST prices for a SAMPLE of markets for validation.
+
+        Only validates a small sample to avoid slow API calls.
+        """
+        import random
         from archantum.data import PriceResult
 
         rest_prices = {}
 
-        async with CLOBClient() as clob_client:
-            for market in markets:
-                if market.id not in market_ids:
-                    continue
+        # Only validate a random sample to keep polling fast
+        markets_to_validate = [m for m in markets if m.id in market_ids]
+        if len(markets_to_validate) > max_samples:
+            markets_to_validate = random.sample(markets_to_validate, max_samples)
 
+        async with CLOBClient() as clob_client:
+            for market in markets_to_validate:
                 try:
                     price_data = await clob_client.get_price_for_market(
                         yes_token_id=market.yes_token_id,
