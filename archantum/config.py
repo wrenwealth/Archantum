@@ -18,7 +18,6 @@ class Settings(BaseSettings):
 
     # Detection thresholds
     arbitrage_threshold: float = Field(default=0.02, description="Arbitrage threshold (2%)")
-    volume_spike_multiplier: float = Field(default=2.0, description="Volume spike multiplier")
     price_move_threshold: float = Field(default=0.05, description="Price movement threshold (5%)")
 
     # Polling configuration
@@ -38,7 +37,6 @@ class Settings(BaseSettings):
     database_path: Path = Field(default=Path("archantum.db"))
 
     # Analysis windows
-    volume_rolling_days: int = Field(default=7, description="Days for volume rolling average")
     price_move_intervals: int = Field(default=120, description="Intervals to look back for price moves")
 
     # Accuracy tracking

@@ -11,7 +11,6 @@ from rich.console import Console
 from archantum.config import settings
 from archantum.db import Database
 from archantum.analysis.arbitrage import ArbitrageOpportunity
-from archantum.analysis.volume import VolumeSpike
 from archantum.analysis.price import PriceMovement
 from archantum.analysis.trends import TrendSignal
 from archantum.analysis.whale import WhaleActivity
@@ -133,28 +132,6 @@ class TelegramAlerter:
             alert_type="arbitrage",
             message=message,
             details=opp.to_dict(),
-        )
-
-    def format_volume_alert(self, spike: VolumeSpike) -> AlertMessage:
-        """Format a volume spike as an alert."""
-        emoji = "📈"
-        link = spike.polymarket_url or "N/A"
-
-        message = f"""{emoji} <b>VOLUME SPIKE DETECTED</b>
-
-<b>Market:</b> {spike.question[:100]}...
-
-<b>Current 24h Volume:</b> ${spike.current_volume:,.0f}
-<b>Average Volume:</b> ${spike.average_volume:,.0f}
-<b>Spike:</b> {spike.spike_multiplier:.1f}x normal
-
-<b>Link:</b> {link}"""
-
-        return AlertMessage(
-            market_id=spike.market_id,
-            alert_type="volume_spike",
-            message=message,
-            details=spike.to_dict(),
         )
 
     def format_price_move_alert(self, movement: PriceMovement) -> AlertMessage:
