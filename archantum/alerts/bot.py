@@ -78,6 +78,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("smartmoney", self.cmd_smartmoney))
         self.application.add_handler(CommandHandler("wallet", self.cmd_wallet))
         self.application.add_handler(CommandHandler("syncwallets", self.cmd_syncwallets))
+        self.application.add_handler(CommandHandler("clearwallets", self.cmd_clearwallets))
 
         # Utility commands
         self.application.add_handler(CommandHandler("getid", self.cmd_getid))
@@ -896,14 +897,19 @@ Use /help to see all available commands."""
 
     async def cmd_syncwallets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /syncwallets command - sync wallets from leaderboard."""
-        await update.message.reply_text("Syncing wallets from leaderboard...")
+        # Check for time period argument (default: DAY for active wallets)
+        time_period = "DAY"
+        if context.args and context.args[0].upper() in ["DAY", "WEEK", "MONTH", "ALL"]:
+            time_period = context.args[0].upper()
+
+        await update.message.reply_text(f"Syncing active wallets from {time_period} leaderboard...")
 
         try:
-            count = await self.smart_money.sync_leaderboard(time_period="WEEK")
+            count = await self.smart_money.sync_leaderboard(time_period=time_period)
 
             if count > 0:
                 await update.message.reply_text(
-                    f"✅ Synced {count} wallets from leaderboard.\n"
+                    f"✅ Synced {count} active wallets from {time_period} leaderboard.\n"
                     f"Use /smartmoney to see top wallets."
                 )
             else:
@@ -911,3 +917,14 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error syncing wallets: {e}")
+
+    async def cmd_clearwallets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /clearwallets command - clear all tracked wallets."""
+        try:
+            count = await self.db.clear_smart_wallets()
+            await update.message.reply_text(
+                f"🗑 Cleared {count} wallets from database.\n"
+                f"Use /syncwallets to sync fresh active wallets."
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Error clearing wallets: {e}")

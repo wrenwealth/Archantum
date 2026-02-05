@@ -67,9 +67,10 @@ class SmartMoneyTracker:
         self.min_trade_usdc = min_trade_usdc
         self.top_wallets_count = top_wallets_count
 
-    async def sync_leaderboard(self, time_period: str = "WEEK") -> int:
+    async def sync_leaderboard(self, time_period: str = "DAY") -> int:
         """Sync top wallets from leaderboard.
 
+        Uses DAY time period by default to ensure wallets are active.
         Returns number of wallets synced.
         """
         async with DataAPIClient() as client:
