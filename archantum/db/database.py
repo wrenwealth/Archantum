@@ -823,14 +823,22 @@ class Database:
             )
             return list(result.all())
 
-    async def get_unsent_smart_trades(self, min_usdc: float = 500.0) -> list[tuple[SmartTrade, SmartWallet]]:
-        """Get trades that haven't been alerted yet."""
+    async def get_unsent_smart_trades(self, min_usdc: float = 500.0, max_age_minutes: int = 10) -> list[tuple[SmartTrade, SmartWallet]]:
+        """Get trades that haven't been alerted yet.
+
+        Only returns trades from the last max_age_minutes to avoid
+        spamming alerts for historical trades when first syncing.
+        """
+        from datetime import datetime, timedelta
+        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+
         async with self.async_session() as session:
             result = await session.execute(
                 select(SmartTrade, SmartWallet)
                 .join(SmartWallet)
                 .where(SmartTrade.alert_sent == False)
                 .where(SmartTrade.usdc_size >= min_usdc)
+                .where(SmartTrade.timestamp >= cutoff)
                 .order_by(SmartTrade.timestamp.desc())
             )
             return list(result.all())
