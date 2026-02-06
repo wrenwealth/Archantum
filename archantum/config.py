@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     rsi_oversold: float = Field(default=30.0, description="RSI oversold threshold")
     rsi_overbought: float = Field(default=70.0, description="RSI overbought threshold")
 
+    # Liquidity enrichment
+    liquidity_enrichment_max: int = Field(default=5, description="Max arbitrage opps to enrich with liquidity per poll")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

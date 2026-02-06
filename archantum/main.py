@@ -20,6 +20,11 @@ from archantum.analysis.confluence import ConfluenceAnalyzer
 from archantum.analysis.scoring import MarketScorer
 from archantum.analysis.cross_platform import CrossPlatformAnalyzer
 from archantum.analysis.lp_rewards import LPRewardsAnalyzer
+from archantum.analysis.liquidity import LiquidityAnalyzer
+from archantum.analysis.risk_score import ExecutionRiskScorer
+from archantum.analysis.multi_outcome import MultiOutcomeAnalyzer
+from archantum.analysis.dependency import DependencyAnalyzer
+from archantum.analysis.speed_tracker import SpeedTracker
 from archantum.data import DataSourceManager, PriceValidator
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
@@ -71,11 +76,19 @@ class PollingEngine:
         # LP rewards analyzer
         self.lp_rewards_analyzer = LPRewardsAnalyzer()
 
+        # Advanced arbitrage analyzers
+        self.liquidity_analyzer = LiquidityAnalyzer()
+        self.risk_scorer = ExecutionRiskScorer(self.db)
+        self.multi_outcome_analyzer = MultiOutcomeAnalyzer()
+        self.dependency_analyzer = DependencyAnalyzer()
+        self.speed_tracker = SpeedTracker(self.db)
+
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
         self._ta_poll_count = 0  # Track polls for TA calculation
         self._scoring_poll_count = 0  # Track polls for market scoring
         self._cross_platform_poll_count = 0  # Track polls for cross-platform arbitrage
+        self._advanced_arb_poll_count = 0  # Track polls for multi-outcome + dependency
 
     async def init(self):
         """Initialize the engine."""
@@ -150,6 +163,9 @@ class PollingEngine:
             "market_scores": 0,
             "cross_platform_arbs": 0,
             "lp_opportunities": 0,
+            "multi_outcome_arbs": 0,
+            "dependency_arbs": 0,
+            "arb_enriched": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -202,6 +218,38 @@ class PollingEngine:
             # Arbitrage detection
             arbitrage_opps = self.arbitrage_analyzer.analyze(markets, all_prices)
             results["arbitrage_opportunities"] = len(arbitrage_opps)
+
+            # Speed tracking: record detections
+            poll_time = datetime.utcnow()
+            for opp in arbitrage_opps:
+                try:
+                    await self.speed_tracker.record_detection(opp, poll_time)
+                except Exception:
+                    pass
+
+            # Liquidity enrichment + risk scoring for top arbitrage opportunities
+            arb_enrichments: dict[str, tuple] = {}  # market_id -> (enrichment, risk)
+            if arbitrage_opps:
+                max_enrich = settings.liquidity_enrichment_max
+                console.print(f"[cyan]Enriching top {min(len(arbitrage_opps), max_enrich)} arbitrage opps with liquidity...[/cyan]")
+                market_lookup = {m.id: m for m in markets}
+                try:
+                    async with CLOBClient() as clob_client:
+                        for opp in arbitrage_opps[:max_enrich]:
+                            market = market_lookup.get(opp.market_id)
+                            if not market:
+                                continue
+                            try:
+                                enriched = await self.liquidity_analyzer.enrich_arbitrage(
+                                    clob_client, opp, market
+                                )
+                                risk = await self.risk_scorer.score(opp, enriched.yes_liquidity)
+                                arb_enrichments[opp.market_id] = (enriched, risk)
+                                results["arb_enriched"] += 1
+                            except Exception as e:
+                                console.print(f"[yellow]Enrichment error for {opp.market_id}: {e}[/yellow]")
+                except Exception as e:
+                    console.print(f"[yellow]Liquidity enrichment error: {e}[/yellow]")
 
             # Price movement detection
             price_moves = await self.price_analyzer.analyze(markets, all_prices)
@@ -348,7 +396,34 @@ class PollingEngine:
                 except Exception as e:
                     console.print(f"[yellow]LP analysis error: {e}[/yellow]")
 
-            # 11. Price validation across sources (WebSocket vs REST)
+            # 11. Multi-outcome + Dependency arbitrage (every 5 polls)
+            multi_outcome_opps = []
+            dependency_opps = []
+            self._advanced_arb_poll_count += 1
+            if self._advanced_arb_poll_count >= 5:
+                self._advanced_arb_poll_count = 0
+
+                # Multi-outcome arbitrage
+                console.print("[cyan]Checking multi-outcome arbitrage...[/cyan]")
+                try:
+                    multi_outcome_opps = self.multi_outcome_analyzer.analyze(markets, all_prices)
+                    results["multi_outcome_arbs"] = len(multi_outcome_opps)
+                    if multi_outcome_opps:
+                        console.print(f"[bold green]Found {len(multi_outcome_opps)} multi-outcome opportunities![/bold green]")
+                except Exception as e:
+                    console.print(f"[yellow]Multi-outcome analysis error: {e}[/yellow]")
+
+                # Dependency arbitrage
+                console.print("[cyan]Checking dependency arbitrage...[/cyan]")
+                try:
+                    dependency_opps = self.dependency_analyzer.analyze(markets, all_prices)
+                    results["dependency_arbs"] = len(dependency_opps)
+                    if dependency_opps:
+                        console.print(f"[bold green]Found {len(dependency_opps)} dependency opportunities![/bold green]")
+                except Exception as e:
+                    console.print(f"[yellow]Dependency analysis error: {e}[/yellow]")
+
+            # 12. Price validation across sources (WebSocket vs REST)
             price_discrepancies = []
             if settings.ws_enabled and self.source_manager.websocket.stats.is_connected:
                 # Get fresh REST prices for validation
@@ -373,11 +448,22 @@ class PollingEngine:
                     except Exception as e:
                         console.print(f"[yellow]Price validation error: {e}[/yellow]")
 
-            # 9. Send alerts
+            # Send alerts
             for opp in arbitrage_opps:
-                alert = self.alerter.format_arbitrage_alert(opp)
+                enrichment_data = arb_enrichments.get(opp.market_id)
+                if enrichment_data:
+                    enriched, risk = enrichment_data
+                    alert = self.alerter.format_arbitrage_alert(opp, enrichment=enriched, risk=risk)
+                else:
+                    alert = self.alerter.format_arbitrage_alert(opp)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
+
+                # Speed tracking: record alert sent
+                try:
+                    await self.speed_tracker.record_alert_sent(opp.market_id, datetime.utcnow())
+                except Exception:
+                    pass
 
             for move in price_moves:
                 alert = self.alerter.format_price_move_alert(move)
@@ -415,6 +501,25 @@ class PollingEngine:
                 alert = self.alerter.format_cross_platform_alert(cross_opp)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
+
+            # Send multi-outcome arbitrage alerts
+            for mo_opp in multi_outcome_opps:
+                alert = self.alerter.format_multi_outcome_alert(mo_opp)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            # Send dependency arbitrage alerts
+            for dep_opp in dependency_opps:
+                alert = self.alerter.format_dependency_alert(dep_opp)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            # Speed tracking: check which opportunities are still available
+            current_arb_ids = {opp.market_id for opp in arbitrage_opps}
+            try:
+                await self.speed_tracker.check_still_available(current_arb_ids)
+            except Exception:
+                pass
 
             # Log price discrepancies to console only (data sync warning, not real arbitrage)
             for discrepancy in price_discrepancies:
@@ -584,6 +689,9 @@ class PollingEngine:
                 console.print(f"  Market scores: {results['market_scores']}")
                 console.print(f"  Cross-platform arbs: {results['cross_platform_arbs']}")
                 console.print(f"  LP opportunities: {results['lp_opportunities']}")
+                console.print(f"  Multi-outcome arbs: {results['multi_outcome_arbs']}")
+                console.print(f"  Dependency arbs: {results['dependency_arbs']}")
+                console.print(f"  Arb enriched (liquidity): {results['arb_enriched']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

@@ -21,6 +21,10 @@ from archantum.analysis.smartmoney import SmartMoneyAlert
 from archantum.analysis.confluence import ConfluenceSignal
 from archantum.analysis.cross_platform import CrossPlatformArbitrage
 from archantum.analysis.lp_rewards import LPOpportunity, LPSimulation
+from archantum.analysis.liquidity import LiquidityAdjustedArbitrage
+from archantum.analysis.risk_score import ExecutionRiskScore
+from archantum.analysis.multi_outcome import MultiOutcomeArbitrage, MultiOutcomeTier
+from archantum.analysis.dependency import DependencyArbitrage
 from archantum.data.validator import ValidationResult
 
 
@@ -113,7 +117,12 @@ class TelegramAlerter:
         console.print(alert.message)
         console.print(f"[bold yellow]{'=' * 50}[/bold yellow]\n")
 
-    def format_arbitrage_alert(self, opp: ArbitrageOpportunity) -> AlertMessage:
+    def format_arbitrage_alert(
+        self,
+        opp: ArbitrageOpportunity,
+        enrichment: LiquidityAdjustedArbitrage | None = None,
+        risk: ExecutionRiskScore | None = None,
+    ) -> AlertMessage:
         """Format an arbitrage opportunity as an alert with tiered formatting."""
         from archantum.analysis.arbitrage import ArbitrageTier
 
@@ -167,6 +176,29 @@ class TelegramAlerter:
 
             resolution_text = f"\n{time_emoji} <b>Resolves in:</b> {time_str}{apy_text}"
 
+        # Liquidity enrichment section
+        liquidity_text = ""
+        if enrichment:
+            max_pos = enrichment.max_position_usd
+            combined_depth = enrichment.combined_depth_usd
+            yes_slip = enrichment.yes_liquidity.slippage_pct_1000
+            no_slip = enrichment.no_liquidity.slippage_pct_1000
+
+            liquidity_text = f"""
+
+<b>Liquidity:</b>
+  Orderbook depth: ${combined_depth:,.0f}
+  Max position: ${max_pos:,.0f}
+  Slippage @$1000: YES {yes_slip:.1f}% / NO {no_slip:.1f}%"""
+
+            if enrichment.slippage_adjusted_profit_1000 is not None:
+                liquidity_text += f"\n  Slippage-adjusted profit @$1000: ${enrichment.slippage_adjusted_profit_1000:.2f}"
+
+        # Risk score section
+        risk_text = ""
+        if risk:
+            risk_text = f"\n\n<b>Execution Score:</b> {risk.total_score:.1f}/10 — {risk.confidence} Confidence"
+
         message = f"""{emoji} <b>{title}</b>
 
 <b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
@@ -177,7 +209,7 @@ class TelegramAlerter:
 <b>Estimated Returns:</b>
   $100 → ${profit_100:.2f} profit
   $500 → ${profit_500:.2f} profit
-  $1000 → ${profit_1000:.2f} profit{warning}
+  $1000 → ${profit_1000:.2f} profit{liquidity_text}{risk_text}{warning}
 
 <b>Link:</b> {link}"""
 
@@ -642,6 +674,97 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
             alert_type="cross_platform",
             message=message,
             details=opp.to_dict(),
+        )
+
+    def format_multi_outcome_alert(self, opp: MultiOutcomeArbitrage) -> AlertMessage:
+        """Format a multi-outcome arbitrage opportunity as an alert."""
+        if opp.tier == MultiOutcomeTier.ALPHA:
+            emoji = "🎯🚨🚨"
+            title = "MULTI-OUTCOME ALPHA"
+        elif opp.tier == MultiOutcomeTier.HIGH_VALUE:
+            emoji = "🎯🔥🔥"
+            title = "MULTI-OUTCOME HIGH VALUE"
+        else:
+            emoji = "🎯"
+            title = "MULTI-OUTCOME ARBITRAGE"
+
+        total_pct = opp.total_probability * 100
+        strategy = "Buy all outcomes" if opp.strategy == "buy_all" else "Sell all outcomes"
+
+        profit_1000 = opp.calculate_profit(1000)
+
+        # Build outcome list
+        outcome_lines = ""
+        for o in opp.outcomes[:10]:  # Cap at 10 to avoid huge messages
+            price_cents = int(o.yes_price * 100)
+            outcome_lines += f"\n  • {o.question[:60]}{'...' if len(o.question) > 60 else ''}: {price_cents}¢"
+
+        link = opp.outcomes[0].polymarket_url if opp.outcomes else "N/A"
+
+        message = f"""{emoji} <b>{title}</b>
+
+<b>Event:</b> {opp.event_name[:100]}{'...' if len(opp.event_name) > 100 else ''}
+<b>Outcomes:</b> {opp.outcome_count}
+<b>Total probability:</b> {total_pct:.1f}%
+<b>Gap:</b> {opp.gap_pct:.1f}%
+<b>Strategy:</b> {strategy}
+
+<b>Outcomes:</b>{outcome_lines}
+
+<b>Profit:</b> {opp.gap_pct:.1f}¢ per $1 | $1000 → ${profit_1000:.2f}
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=f"multi_{opp.event_slug}",
+            alert_type="multi_outcome",
+            message=message,
+            details=opp.to_dict(),
+        )
+
+    def format_dependency_alert(self, dep: DependencyArbitrage) -> AlertMessage:
+        """Format a dependency-based arbitrage alert."""
+        import html as html_lib
+
+        emoji = "🔗"
+
+        dep_type_labels = {
+            "time_based": "Time-Based",
+            "subset": "Subset/Threshold",
+            "mutually_exclusive": "Mutually Exclusive",
+        }
+        dep_label = dep_type_labels.get(dep.dependency_type.value, dep.dependency_type.value)
+
+        price_a_cents = int(dep.market_a_yes_price * 100)
+        price_b_cents = int(dep.market_b_yes_price * 100)
+
+        link_a = dep.market_a_url or "N/A"
+        link_b = dep.market_b_url or "N/A"
+
+        # Escape violation text to avoid HTML parse errors (< > & chars)
+        violation_safe = html_lib.escape(dep.violation)
+
+        message = f"""{emoji} <b>DEPENDENCY ARBITRAGE DETECTED</b>
+
+<b>Market A:</b> {dep.market_a_question[:80]}{'...' if len(dep.market_a_question) > 80 else ''}
+Yes: {price_a_cents}¢
+
+<b>Market B:</b> {dep.market_b_question[:80]}{'...' if len(dep.market_b_question) > 80 else ''}
+Yes: {price_b_cents}¢
+
+<b>Dependency:</b> {dep_label}
+<b>Violation:</b> {violation_safe}
+<b>Estimated profit:</b> {dep.estimated_profit_pct:.1f}%
+
+<b>Links:</b>
+• {link_a}
+• {link_b}"""
+
+        return AlertMessage(
+            market_id=f"dep_{dep.market_a_id}_{dep.market_b_id}",
+            alert_type="dependency",
+            message=message,
+            details=dep.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:
