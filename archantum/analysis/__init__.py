@@ -1,6 +1,14 @@
 """Analysis modules for detecting trading opportunities."""
 
-from .arbitrage import ArbitrageAnalyzer, ArbitrageOpportunity
+from .arbitrage import (
+    ArbitrageAnalyzer,
+    ArbitrageOpportunity,
+    GuaranteedProfit,
+    OpportunityReason,
+    REASON_EXPLANATIONS,
+    calculate_guaranteed_profit,
+    classify_opportunity_reason,
+)
 from .price import PriceAnalyzer, PriceMovement
 from .trends import TrendAnalyzer, TrendSignal
 from .whale import WhaleAnalyzer, WhaleActivity
@@ -13,13 +21,19 @@ from .indicators import TechnicalIndicatorCalculator, IndicatorValues
 from .confluence import ConfluenceAnalyzer, ConfluenceSignal
 from .liquidity import LiquidityAnalyzer, LiquidityProfile, LiquidityAdjustedArbitrage
 from .risk_score import ExecutionRiskScorer, ExecutionRiskScore
-from .multi_outcome import MultiOutcomeAnalyzer, MultiOutcomeArbitrage
+from .multi_outcome import MultiOutcomeAnalyzer, MultiOutcomeArbitrage, SumDeviationTracker
 from .dependency import DependencyAnalyzer, DependencyArbitrage, DependencyType
 from .speed_tracker import SpeedTracker
+from .settlement import SettlementLagDetector, SettlementLagOpportunity
 
 __all__ = [
     "ArbitrageAnalyzer",
     "ArbitrageOpportunity",
+    "GuaranteedProfit",
+    "OpportunityReason",
+    "REASON_EXPLANATIONS",
+    "calculate_guaranteed_profit",
+    "classify_opportunity_reason",
     "PriceAnalyzer",
     "PriceMovement",
     "TrendAnalyzer",
@@ -48,8 +62,11 @@ __all__ = [
     "ExecutionRiskScore",
     "MultiOutcomeAnalyzer",
     "MultiOutcomeArbitrage",
+    "SumDeviationTracker",
     "DependencyAnalyzer",
     "DependencyArbitrage",
     "DependencyType",
     "SpeedTracker",
+    "SettlementLagDetector",
+    "SettlementLagOpportunity",
 ]

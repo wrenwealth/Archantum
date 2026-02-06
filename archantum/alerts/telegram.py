@@ -10,7 +10,12 @@ from rich.console import Console
 
 from archantum.config import settings
 from archantum.db import Database
-from archantum.analysis.arbitrage import ArbitrageOpportunity
+from archantum.analysis.arbitrage import (
+    ArbitrageOpportunity,
+    GuaranteedProfit,
+    OpportunityReason,
+    REASON_EXPLANATIONS,
+)
 from archantum.analysis.price import PriceMovement
 from archantum.analysis.trends import TrendSignal
 from archantum.analysis.whale import WhaleActivity
@@ -25,6 +30,7 @@ from archantum.analysis.liquidity import LiquidityAdjustedArbitrage
 from archantum.analysis.risk_score import ExecutionRiskScore
 from archantum.analysis.multi_outcome import MultiOutcomeArbitrage, MultiOutcomeTier
 from archantum.analysis.dependency import DependencyArbitrage
+from archantum.analysis.settlement import SettlementLagOpportunity
 from archantum.data.validator import ValidationResult
 
 
@@ -122,6 +128,8 @@ class TelegramAlerter:
         opp: ArbitrageOpportunity,
         enrichment: LiquidityAdjustedArbitrage | None = None,
         risk: ExecutionRiskScore | None = None,
+        guaranteed_profit: GuaranteedProfit | None = None,
+        reason: OpportunityReason | None = None,
     ) -> AlertMessage:
         """Format an arbitrage opportunity as an alert with tiered formatting."""
         from archantum.analysis.arbitrage import ArbitrageTier
@@ -141,6 +149,11 @@ class TelegramAlerter:
             emoji = "🔥"
             title = "ARBITRAGE DETECTED"
             warning = ""
+
+        # Alpha capture badge
+        if guaranteed_profit and guaranteed_profit.capture_ratio >= 0.90:
+            emoji = "⚡ " + emoji
+            title = "ALPHA CAPTURE — " + title
 
         # Calculate profits
         profit_100 = opp.calculate_profit(100)
@@ -199,6 +212,21 @@ class TelegramAlerter:
         if risk:
             risk_text = f"\n\n<b>Execution Score:</b> {risk.total_score:.1f}/10 — {risk.confidence} Confidence"
 
+        # Guaranteed profit section
+        gp_text = ""
+        if guaranteed_profit:
+            conf_emoji = "✅" if guaranteed_profit.confidence == "HIGH" else "🟡" if guaranteed_profit.confidence == "MEDIUM" else "🔴"
+            gp_text = f"""
+
+<b>Guaranteed Profit:</b> {guaranteed_profit.guaranteed_profit_cents:.1f}¢/share ({guaranteed_profit.capture_ratio:.0%} of theoretical)
+Fees: ~{guaranteed_profit.estimated_fees_cents:.1f}¢ | Slippage: ~{guaranteed_profit.estimated_slippage_cents:.1f}¢
+Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
+
+        # Reason explanation
+        reason_text = ""
+        if reason:
+            reason_text = f"\n\n💡 <i>{REASON_EXPLANATIONS[reason]}</i>"
+
         message = f"""{emoji} <b>{title}</b>
 
 <b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
@@ -209,7 +237,7 @@ class TelegramAlerter:
 <b>Estimated Returns:</b>
   $100 → ${profit_100:.2f} profit
   $500 → ${profit_500:.2f} profit
-  $1000 → ${profit_1000:.2f} profit{liquidity_text}{risk_text}{warning}
+  $1000 → ${profit_1000:.2f} profit{gp_text}{liquidity_text}{risk_text}{reason_text}{warning}
 
 <b>Link:</b> {link}"""
 
@@ -676,8 +704,15 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
             details=opp.to_dict(),
         )
 
-    def format_multi_outcome_alert(self, opp: MultiOutcomeArbitrage) -> AlertMessage:
+    def format_multi_outcome_alert(
+        self,
+        opp: MultiOutcomeArbitrage,
+        reason: OpportunityReason | None = None,
+    ) -> AlertMessage:
         """Format a multi-outcome arbitrage opportunity as an alert."""
+        if reason is None:
+            reason = OpportunityReason.MULTI_OUTCOME_MISPRICING
+
         if opp.tier == MultiOutcomeTier.ALPHA:
             emoji = "🎯🚨🚨"
             title = "MULTI-OUTCOME ALPHA"
@@ -699,7 +734,14 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
             price_cents = int(o.yes_price * 100)
             outcome_lines += f"\n  • {o.question[:60]}{'...' if len(o.question) > 60 else ''}: {price_cents}¢"
 
+        # Deviation history
+        deviation_text = ""
+        if opp.deviation_multiplier is not None and opp.deviation_multiplier > 1.5:
+            deviation_text = f"\n\n📊 <b>Deviation is {opp.deviation_multiplier:.1f}x historical average</b> (7-day avg: {opp.historical_avg_deviation:.1f}%)"
+
         link = opp.outcomes[0].polymarket_url if opp.outcomes else "N/A"
+
+        reason_text = f"\n\n💡 <i>{REASON_EXPLANATIONS[reason]}</i>"
 
         message = f"""{emoji} <b>{title}</b>
 
@@ -711,7 +753,7 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
 
 <b>Outcomes:</b>{outcome_lines}
 
-<b>Profit:</b> {opp.gap_pct:.1f}¢ per $1 | $1000 → ${profit_1000:.2f}
+<b>Profit:</b> {opp.gap_pct:.1f}¢ per $1 | $1000 → ${profit_1000:.2f}{deviation_text}{reason_text}
 
 <b>Link:</b> {link}"""
 
@@ -722,9 +764,16 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
             details=opp.to_dict(),
         )
 
-    def format_dependency_alert(self, dep: DependencyArbitrage) -> AlertMessage:
+    def format_dependency_alert(
+        self,
+        dep: DependencyArbitrage,
+        reason: OpportunityReason | None = None,
+    ) -> AlertMessage:
         """Format a dependency-based arbitrage alert."""
         import html as html_lib
+
+        if reason is None:
+            reason = OpportunityReason.DEPENDENCY_VIOLATION
 
         emoji = "🔗"
 
@@ -744,6 +793,8 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
         # Escape violation text to avoid HTML parse errors (< > & chars)
         violation_safe = html_lib.escape(dep.violation)
 
+        reason_text = f"\n\n💡 <i>{REASON_EXPLANATIONS[reason]}</i>"
+
         message = f"""{emoji} <b>DEPENDENCY ARBITRAGE DETECTED</b>
 
 <b>Market A:</b> {dep.market_a_question[:80]}{'...' if len(dep.market_a_question) > 80 else ''}
@@ -754,7 +805,7 @@ Yes: {price_b_cents}¢
 
 <b>Dependency:</b> {dep_label}
 <b>Violation:</b> {violation_safe}
-<b>Estimated profit:</b> {dep.estimated_profit_pct:.1f}%
+<b>Estimated profit:</b> {dep.estimated_profit_pct:.1f}%{reason_text}
 
 <b>Links:</b>
 • {link_a}
@@ -765,6 +816,41 @@ Yes: {price_b_cents}¢
             alert_type="dependency",
             message=message,
             details=dep.to_dict(),
+        )
+
+    def format_settlement_lag_alert(self, opp: SettlementLagOpportunity) -> AlertMessage:
+        """Format a settlement lag opportunity as an alert."""
+        price_cents = int(opp.current_yes_price * 100)
+        expected_cents = int(opp.expected_settlement * 100)
+
+        price_1h_text = ""
+        if opp.price_1h_ago is not None:
+            price_1h_cents = int(opp.price_1h_ago * 100)
+            price_1h_text = f"\n<b>1h ago:</b> {price_1h_cents}¢"
+
+        volume_text = ""
+        if opp.volume_24hr is not None:
+            volume_text = f"\n<b>24h Volume:</b> ${opp.volume_24hr:,.0f}"
+
+        link = opp.polymarket_url or "N/A"
+
+        message = f"""⏳ <b>SETTLEMENT LAG DETECTED</b>
+
+<b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
+
+<b>Current:</b> {price_cents}¢ → <b>Expected:</b> {expected_cents}¢{price_1h_text}
+<b>Movement:</b> {opp.price_change_pct:.1f}% in last hour
+<b>Potential:</b> {opp.potential_profit_cents:.1f}¢/share on convergence{volume_text}
+
+💡 <i>{REASON_EXPLANATIONS[OpportunityReason.SETTLEMENT_LAG]}</i>
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=opp.market_id,
+            alert_type="settlement_lag",
+            message=message,
+            details=opp.to_dict(),
         )
 
     async def send_test_alert(self) -> bool:

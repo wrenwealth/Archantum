@@ -19,6 +19,29 @@ class ArbitrageTier(Enum):
     ALPHA = "alpha"  # 10%+ gap (Yes + No < 90¢)
 
 
+class OpportunityReason(Enum):
+    """Why an arbitrage opportunity likely exists."""
+
+    LOW_LIQUIDITY = "low_liquidity"
+    SETTLEMENT_LAG = "settlement_lag"
+    MARKET_STRUCTURE = "market_structure"
+    MULTI_OUTCOME_MISPRICING = "multi_outcome_mispricing"
+    DEPENDENCY_VIOLATION = "dependency_violation"
+    NEW_INFORMATION = "new_information"
+    UNKNOWN = "unknown"
+
+
+REASON_EXPLANATIONS = {
+    OpportunityReason.LOW_LIQUIDITY: "Low orderbook depth allows prices to deviate — may close quickly once liquidity returns",
+    OpportunityReason.SETTLEMENT_LAG: "Market outcome appears decided but price hasn't fully converged to 0/100¢ yet",
+    OpportunityReason.MARKET_STRUCTURE: "Yes + No prices don't sum to $1 due to market maker spread or fee structure",
+    OpportunityReason.MULTI_OUTCOME_MISPRICING: "Outcome probabilities in this event don't sum to 100% — structural mispricing",
+    OpportunityReason.DEPENDENCY_VIOLATION: "Logically related markets have inconsistent pricing",
+    OpportunityReason.NEW_INFORMATION: "Recent rapid price movement suggests new information not yet fully priced in",
+    OpportunityReason.UNKNOWN: "Opportunity source unclear — verify manually before trading",
+}
+
+
 @dataclass
 class ArbitrageOpportunity:
     """Represents an arbitrage opportunity."""
@@ -273,3 +296,76 @@ class ArbitrageAnalyzer:
             direction="under",
             tier=tier,
         )
+
+
+@dataclass
+class GuaranteedProfit:
+    """Profit guarantee calculation accounting for fees and slippage."""
+
+    theoretical_profit_cents: float   # Raw gap: (1.0 - total_price) * 100
+    estimated_fees_cents: float       # ~2% per side on Polymarket
+    estimated_slippage_cents: float   # From liquidity profile (0 if no enrichment)
+    guaranteed_profit_cents: float    # theoretical - fees - slippage
+    capture_ratio: float              # guaranteed / theoretical (0.0-1.0)
+    confidence: str                   # "HIGH" (>=75%), "MEDIUM" (>=50%), "LOW" (<50%)
+
+
+def calculate_guaranteed_profit(
+    opp: ArbitrageOpportunity,
+    enrichment: "LiquidityAdjustedArbitrage | None" = None,
+    fee_rate: float = 0.02,
+) -> GuaranteedProfit:
+    """Calculate guaranteed profit after fees and slippage."""
+    theoretical = (1.0 - opp.total_price) * 100  # cents
+
+    # Fees: buying YES + NO = 2 transactions
+    fees = opp.total_price * fee_rate * 2 * 100  # cents
+
+    # Slippage from liquidity enrichment
+    slippage = 0.0
+    if enrichment:
+        yes_slip = enrichment.yes_liquidity.slippage_pct_1000 or 0
+        no_slip = enrichment.no_liquidity.slippage_pct_1000 or 0
+        slippage = (yes_slip + no_slip) / 2 * opp.total_price * 100  # cents
+
+    guaranteed = max(0, theoretical - fees - slippage)
+    ratio = guaranteed / theoretical if theoretical > 0 else 0
+
+    if ratio >= 0.75:
+        confidence = "HIGH"
+    elif ratio >= 0.50:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    return GuaranteedProfit(
+        theoretical_profit_cents=theoretical,
+        estimated_fees_cents=fees,
+        estimated_slippage_cents=slippage,
+        guaranteed_profit_cents=guaranteed,
+        capture_ratio=ratio,
+        confidence=confidence,
+    )
+
+
+def classify_opportunity_reason(
+    opp,
+    enrichment=None,
+    price_movement_pct: float | None = None,
+) -> OpportunityReason:
+    """Classify why an arbitrage opportunity likely exists."""
+    # Check liquidity first — low depth is most common cause
+    if enrichment and enrichment.combined_depth_usd < 500:
+        return OpportunityReason.LOW_LIQUIDITY
+
+    # Check for settlement lag (extreme prices)
+    if hasattr(opp, 'yes_price'):
+        if opp.yes_price > 0.95 or opp.yes_price < 0.05:
+            return OpportunityReason.SETTLEMENT_LAG
+
+    # Check for recent rapid price movement
+    if price_movement_pct is not None and abs(price_movement_pct) > 10:
+        return OpportunityReason.NEW_INFORMATION
+
+    # Default: market structure (spread/fee related)
+    return OpportunityReason.MARKET_STRUCTURE

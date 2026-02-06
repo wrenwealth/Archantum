@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
+
+from sqlalchemy import select, func
 
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
@@ -40,6 +43,8 @@ class MultiOutcomeArbitrage:
     strategy: str             # 'buy_all' or 'sell_all'
     profit_per_dollar: float  # Profit per $1 invested
     tier: MultiOutcomeTier = MultiOutcomeTier.STANDARD
+    historical_avg_deviation: float | None = None  # 7-day rolling avg
+    deviation_multiplier: float | None = None      # current / historical
 
     @property
     def outcome_count(self) -> int:
@@ -207,3 +212,56 @@ class MultiOutcomeAnalyzer:
         if questions:
             return questions[0][:80]
         return "Unknown Event"
+
+
+class SumDeviationTracker:
+    """Tracks historical sum deviations for multi-outcome events."""
+
+    def __init__(self, db):
+        self.db = db
+
+    async def record_deviation(
+        self,
+        event_slug: str,
+        outcome_count: int,
+        sum_deviation: float,
+        total_probability: float,
+    ) -> None:
+        """Record a sum deviation observation."""
+        from archantum.db.models import SumDeviationHistory
+
+        async with self.db.async_session() as session:
+            row = SumDeviationHistory(
+                event_slug=event_slug,
+                outcome_count=outcome_count,
+                sum_deviation=sum_deviation,
+                total_probability=total_probability,
+            )
+            session.add(row)
+            await session.commit()
+
+    async def get_historical_avg(self, event_slug: str, days: int = 7) -> float | None:
+        """Get average sum deviation for an event over the last N days."""
+        from archantum.db.models import SumDeviationHistory
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        async with self.db.async_session() as session:
+            result = await session.execute(
+                select(func.avg(SumDeviationHistory.sum_deviation))
+                .where(SumDeviationHistory.event_slug == event_slug)
+                .where(SumDeviationHistory.timestamp >= cutoff)
+            )
+            avg = result.scalar()
+            return float(avg) if avg is not None else None
+
+    async def enrich_opportunities(self, opps: list[MultiOutcomeArbitrage]) -> None:
+        """Enrich multi-outcome opportunities with historical deviation data."""
+        for opp in opps:
+            try:
+                hist_avg = await self.get_historical_avg(opp.event_slug)
+                if hist_avg is not None and hist_avg > 0:
+                    current_deviation = abs(opp.total_probability - 1.0)
+                    opp.historical_avg_deviation = hist_avg
+                    opp.deviation_multiplier = current_deviation / hist_avg
+            except Exception:
+                pass
