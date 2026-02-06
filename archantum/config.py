@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     # Liquidity enrichment
     liquidity_enrichment_max: int = Field(default=5, description="Max arbitrage opps to enrich with liquidity per poll")
 
+    # Profit guarantee
+    guaranteed_profit_min_cents: float = Field(default=5.0, description="Min guaranteed profit to alert (cents)")
+    alpha_capture_min_pct: float = Field(default=0.50, description="Min capture ratio to alert")
+    alpha_capture_good_pct: float = Field(default=0.90, description="Capture ratio for ALPHA badge")
+
+    # Settlement lag
+    settlement_extreme_threshold: float = Field(default=0.95, description="Price threshold for extreme (>95¢ or <5¢)")
+    settlement_min_movement_pct: float = Field(default=3.0, description="Min 1h price movement for settlement lag")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

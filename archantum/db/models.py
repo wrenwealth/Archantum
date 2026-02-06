@@ -332,6 +332,19 @@ class ArbitrageTracking(Base):
     lifespan_seconds = Column(Float, nullable=True)
 
 
+class SumDeviationHistory(Base):
+    """Historical tracking of multi-outcome sum deviations per event."""
+
+    __tablename__ = "sum_deviation_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_slug = Column(String, nullable=False)
+    outcome_count = Column(Integer, nullable=False)
+    sum_deviation = Column(Float, nullable=False)  # abs(sum - 1.0)
+    total_probability = Column(Float, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+
 class SpeedSummary(Base):
     """Weekly speed summary statistics."""
 

@@ -22,9 +22,15 @@ from archantum.analysis.cross_platform import CrossPlatformAnalyzer
 from archantum.analysis.lp_rewards import LPRewardsAnalyzer
 from archantum.analysis.liquidity import LiquidityAnalyzer
 from archantum.analysis.risk_score import ExecutionRiskScorer
-from archantum.analysis.multi_outcome import MultiOutcomeAnalyzer
+from archantum.analysis.multi_outcome import MultiOutcomeAnalyzer, SumDeviationTracker
 from archantum.analysis.dependency import DependencyAnalyzer
 from archantum.analysis.speed_tracker import SpeedTracker
+from archantum.analysis.settlement import SettlementLagDetector
+from archantum.analysis.arbitrage import (
+    calculate_guaranteed_profit,
+    classify_opportunity_reason,
+    OpportunityReason,
+)
 from archantum.data import DataSourceManager, PriceValidator
 from archantum.alerts import TelegramAlerter, TelegramBot
 from archantum.cli import Dashboard
@@ -82,6 +88,8 @@ class PollingEngine:
         self.multi_outcome_analyzer = MultiOutcomeAnalyzer()
         self.dependency_analyzer = DependencyAnalyzer()
         self.speed_tracker = SpeedTracker(self.db)
+        self.settlement_detector = SettlementLagDetector(self.db)
+        self.deviation_tracker = SumDeviationTracker(self.db)
 
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
@@ -166,6 +174,7 @@ class PollingEngine:
             "multi_outcome_arbs": 0,
             "dependency_arbs": 0,
             "arb_enriched": 0,
+            "settlement_lag_opps": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -448,14 +457,36 @@ class PollingEngine:
                     except Exception as e:
                         console.print(f"[yellow]Price validation error: {e}[/yellow]")
 
+            # Settlement lag detection (every poll — lightweight)
+            settlement_opps = []
+            try:
+                console.print("[cyan]Checking settlement lag...[/cyan]")
+                settlement_opps = await self.settlement_detector.analyze(markets, all_prices)
+                results["settlement_lag_opps"] = len(settlement_opps)
+                if settlement_opps:
+                    console.print(f"[bold green]Found {len(settlement_opps)} settlement lag opportunities![/bold green]")
+            except Exception as e:
+                console.print(f"[yellow]Settlement lag error: {e}[/yellow]")
+
             # Send alerts
             for opp in arbitrage_opps:
                 enrichment_data = arb_enrichments.get(opp.market_id)
-                if enrichment_data:
-                    enriched, risk = enrichment_data
-                    alert = self.alerter.format_arbitrage_alert(opp, enrichment=enriched, risk=risk)
-                else:
-                    alert = self.alerter.format_arbitrage_alert(opp)
+                enriched, risk = enrichment_data if enrichment_data else (None, None)
+
+                # Guaranteed profit calculation + alpha filtering
+                gp = calculate_guaranteed_profit(opp, enriched)
+                if gp.guaranteed_profit_cents < settings.guaranteed_profit_min_cents:
+                    continue
+                if gp.capture_ratio < settings.alpha_capture_min_pct:
+                    continue
+
+                # Classify reason
+                reason = classify_opportunity_reason(opp, enriched)
+
+                alert = self.alerter.format_arbitrage_alert(
+                    opp, enrichment=enriched, risk=risk,
+                    guaranteed_profit=gp, reason=reason,
+                )
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -502,6 +533,20 @@ class PollingEngine:
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
+            # Deviation tracking + enrichment for multi-outcome opps
+            if multi_outcome_opps:
+                try:
+                    for mo_opp in multi_outcome_opps:
+                        await self.deviation_tracker.record_deviation(
+                            event_slug=mo_opp.event_slug,
+                            outcome_count=mo_opp.outcome_count,
+                            sum_deviation=abs(mo_opp.total_probability - 1.0),
+                            total_probability=mo_opp.total_probability,
+                        )
+                    await self.deviation_tracker.enrich_opportunities(multi_outcome_opps)
+                except Exception as e:
+                    console.print(f"[yellow]Deviation tracking error: {e}[/yellow]")
+
             # Send multi-outcome arbitrage alerts
             for mo_opp in multi_outcome_opps:
                 alert = self.alerter.format_multi_outcome_alert(mo_opp)
@@ -511,6 +556,12 @@ class PollingEngine:
             # Send dependency arbitrage alerts
             for dep_opp in dependency_opps:
                 alert = self.alerter.format_dependency_alert(dep_opp)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            # Send settlement lag alerts
+            for s_opp in settlement_opps:
+                alert = self.alerter.format_settlement_lag_alert(s_opp)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -692,6 +743,7 @@ class PollingEngine:
                 console.print(f"  Multi-outcome arbs: {results['multi_outcome_arbs']}")
                 console.print(f"  Dependency arbs: {results['dependency_arbs']}")
                 console.print(f"  Arb enriched (liquidity): {results['arb_enriched']}")
+                console.print(f"  Settlement lag opps: {results['settlement_lag_opps']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")
