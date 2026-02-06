@@ -309,3 +309,42 @@ class MarketScore(Base):
     # Tracking changes
     previous_score = Column(Float, nullable=True)
     score_change = Column(Float, nullable=True)  # Positive = improving
+
+
+class ArbitrageTracking(Base):
+    """Speed tracking for arbitrage opportunities."""
+
+    __tablename__ = "arbitrage_tracking"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, nullable=False)
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    alert_sent_at = Column(DateTime, nullable=True)
+    detection_to_alert_ms = Column(Float, nullable=True)
+
+    # Opportunity details at detection time
+    arbitrage_pct = Column(Float, nullable=True)
+    tier = Column(String, nullable=True)  # 'standard', 'high_value', 'alpha'
+
+    # Lifespan tracking
+    still_available_at = Column(DateTime, nullable=True)
+    disappeared_at = Column(DateTime, nullable=True)
+    lifespan_seconds = Column(Float, nullable=True)
+
+
+class SpeedSummary(Base):
+    """Weekly speed summary statistics."""
+
+    __tablename__ = "speed_summaries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    week_start = Column(DateTime, nullable=False)
+    week_end = Column(DateTime, nullable=False)
+
+    total_detected = Column(Integer, default=0)
+    avg_lifespan_seconds = Column(Float, nullable=True)
+    avg_detection_to_alert_ms = Column(Float, nullable=True)
+    missed_count = Column(Integer, default=0)  # Disappeared before alert sent
+    still_available_rate = Column(Float, nullable=True)  # % still available at next poll
+
+    created_at = Column(DateTime, default=datetime.utcnow)
