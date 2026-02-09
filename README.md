@@ -12,6 +12,7 @@ Polymarket prediction market analysis agent with real-time arbitrage detection, 
 - **Dependency Arbitrage** — Finds logically related markets with inconsistent pricing (time-based, subset, mutually exclusive)
 - **Cross-Platform Arbitrage** — Compares Polymarket vs Kalshi prices for the same events
 - **Settlement Lag Detection** — Markets where the outcome appears decided (price > 95c or < 5c) but hasn't fully converged
+- **Certain Outcome Detection** — AI-verified markets ending within 72h with extreme prices (>=93c), combines Claude API verification (70%) with multi-signal scoring (30%: stability, volume, cross-platform)
 
 ### Opportunity Intelligence
 - **Why It Exists** — Every alert includes a reason classification: low liquidity, settlement lag, market structure, multi-outcome mispricing, dependency violation, or new information
@@ -113,6 +114,13 @@ ALPHA_CAPTURE_GOOD_PCT=0.90     # Capture ratio for ALPHA badge
 SETTLEMENT_EXTREME_THRESHOLD=0.95  # Price threshold for extreme (>95c or <5c)
 SETTLEMENT_MIN_MOVEMENT_PCT=3.0    # Min 1h price movement %
 
+# Certain Outcome (AI-verified)
+ANTHROPIC_API_KEY=your_key         # Claude API key for AI verification
+CERTAIN_OUTCOME_ENABLED=true       # enable/disable
+CERTAIN_OUTCOME_HOURS_WINDOW=72    # hours before resolution
+CERTAIN_OUTCOME_PRICE_THRESHOLD=0.93  # min extreme price (93c)
+CERTAIN_OUTCOME_MIN_SCORE=0.80     # min combined score to alert
+
 # Polling
 POLL_INTERVAL=30                # seconds
 BATCH_SIZE=50                   # markets per batch
@@ -180,6 +188,7 @@ archantum/
 │   └── telegram.py        # Alert formatting and sending
 ├── analysis/              # Market analysis modules
 │   ├── arbitrage.py       # Yes/No arbitrage + guaranteed profit + reason classifier
+│   ├── certain_outcome.py # AI-verified certain outcome detection
 │   ├── settlement.py      # Settlement lag detection
 │   ├── multi_outcome.py   # Multi-outcome arbitrage + deviation tracking
 │   ├── dependency.py      # Dependency-based arbitrage
@@ -243,6 +252,7 @@ GammaClient → Markets → DataSourceManager (WS→REST→Cache) → Prices
 | LP Opportunities | Every 5 polls |
 | Multi-Outcome Arb | Every 5 polls |
 | Dependency Arb | Every 5 polls |
+| Certain Outcome (AI) | Every 5 polls |
 
 ## License
 
