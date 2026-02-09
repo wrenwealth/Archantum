@@ -25,6 +25,7 @@ from .multi_outcome import MultiOutcomeAnalyzer, MultiOutcomeArbitrage, SumDevia
 from .dependency import DependencyAnalyzer, DependencyArbitrage, DependencyType
 from .speed_tracker import SpeedTracker
 from .settlement import SettlementLagDetector, SettlementLagOpportunity
+from .certain_outcome import CertainOutcomeDetector, CertainOutcomeOpportunity, CertainOutcomeTier
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -69,4 +70,7 @@ __all__ = [
     "SpeedTracker",
     "SettlementLagDetector",
     "SettlementLagOpportunity",
+    "CertainOutcomeDetector",
+    "CertainOutcomeOpportunity",
+    "CertainOutcomeTier",
 ]

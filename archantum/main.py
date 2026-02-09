@@ -26,6 +26,7 @@ from archantum.analysis.multi_outcome import MultiOutcomeAnalyzer, SumDeviationT
 from archantum.analysis.dependency import DependencyAnalyzer
 from archantum.analysis.speed_tracker import SpeedTracker
 from archantum.analysis.settlement import SettlementLagDetector
+from archantum.analysis.certain_outcome import CertainOutcomeDetector
 from archantum.analysis.arbitrage import (
     calculate_guaranteed_profit,
     classify_opportunity_reason,
@@ -91,12 +92,18 @@ class PollingEngine:
         self.settlement_detector = SettlementLagDetector(self.db)
         self.deviation_tracker = SumDeviationTracker(self.db)
 
+        # Certain outcome detector (AI-verified)
+        self.certain_outcome_detector: CertainOutcomeDetector | None = (
+            CertainOutcomeDetector(self.db) if settings.certain_outcome_configured else None
+        )
+
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
         self._ta_poll_count = 0  # Track polls for TA calculation
         self._scoring_poll_count = 0  # Track polls for market scoring
         self._cross_platform_poll_count = 0  # Track polls for cross-platform arbitrage
         self._advanced_arb_poll_count = 0  # Track polls for multi-outcome + dependency
+        self._certain_outcome_poll_count = 0  # Track polls for certain outcome detection
 
     async def init(self):
         """Initialize the engine."""
@@ -175,6 +182,7 @@ class PollingEngine:
             "dependency_arbs": 0,
             "arb_enriched": 0,
             "settlement_lag_opps": 0,
+            "certain_outcome_opps": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -468,6 +476,23 @@ class PollingEngine:
             except Exception as e:
                 console.print(f"[yellow]Settlement lag error: {e}[/yellow]")
 
+            # 13. Certain outcome detection (AI-verified) — every 5 polls
+            certain_outcome_opps = []
+            if self.certain_outcome_detector:
+                self._certain_outcome_poll_count += 1
+                if self._certain_outcome_poll_count >= 5:
+                    self._certain_outcome_poll_count = 0
+                    console.print("[cyan]Checking certain outcomes (AI-verified)...[/cyan]")
+                    try:
+                        certain_outcome_opps = await self.certain_outcome_detector.analyze(
+                            markets, all_prices
+                        )
+                        results["certain_outcome_opps"] = len(certain_outcome_opps)
+                        if certain_outcome_opps:
+                            console.print(f"[bold green]Found {len(certain_outcome_opps)} certain outcome opportunities![/bold green]")
+                    except Exception as e:
+                        console.print(f"[yellow]Certain outcome error: {e}[/yellow]")
+
             # Send alerts
             for opp in arbitrage_opps:
                 enrichment_data = arb_enrichments.get(opp.market_id)
@@ -562,6 +587,12 @@ class PollingEngine:
             # Send settlement lag alerts
             for s_opp in settlement_opps:
                 alert = self.alerter.format_settlement_lag_alert(s_opp)
+                await self.alerter.send_alert(alert)
+                results["alerts_sent"] += 1
+
+            # Send certain outcome alerts
+            for co_opp in certain_outcome_opps:
+                alert = self.alerter.format_certain_outcome_alert(co_opp)
                 await self.alerter.send_alert(alert)
                 results["alerts_sent"] += 1
 
@@ -716,6 +747,10 @@ class PollingEngine:
             console.print(f"[dim]Technical Analysis: Enabled (every {settings.ta_poll_frequency} polls)[/dim]")
         else:
             console.print(f"[dim]Technical Analysis: Disabled[/dim]")
+        if settings.certain_outcome_configured:
+            console.print(f"[dim]Certain Outcome Detection: Enabled (AI-verified, every 5 polls)[/dim]")
+        else:
+            console.print(f"[dim]Certain Outcome Detection: Disabled (no API key)[/dim]")
         console.print()
 
         while self.running:
@@ -744,6 +779,7 @@ class PollingEngine:
                 console.print(f"  Dependency arbs: {results['dependency_arbs']}")
                 console.print(f"  Arb enriched (liquidity): {results['arb_enriched']}")
                 console.print(f"  Settlement lag opps: {results['settlement_lag_opps']}")
+                console.print(f"  Certain outcome opps: {results['certain_outcome_opps']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

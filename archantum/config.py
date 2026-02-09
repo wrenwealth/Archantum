@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     settlement_extreme_threshold: float = Field(default=0.95, description="Price threshold for extreme (>95¢ or <5¢)")
     settlement_min_movement_pct: float = Field(default=3.0, description="Min 1h price movement for settlement lag")
 
+    # Certain outcome detection (AI-verified)
+    anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+    certain_outcome_enabled: bool = Field(default=True, description="Enable certain outcome detection")
+    certain_outcome_hours_window: float = Field(default=72.0, description="Hours before resolution to consider")
+    certain_outcome_price_threshold: float = Field(default=0.93, description="Min extreme price (93¢)")
+    certain_outcome_min_score: float = Field(default=0.80, description="Min combined score to alert")
+    certain_outcome_ai_model: str = Field(default="claude-sonnet-4-20250514", description="Claude model for verification")
+    certain_outcome_ai_weight: float = Field(default=0.70, description="AI score weight in combined score")
+    certain_outcome_signal_weight: float = Field(default=0.30, description="Signal score weight in combined score")
+    certain_outcome_cache_hours: float = Field(default=6.0, description="AI verification cache TTL in hours")
+    certain_outcome_max_ai_calls_per_poll: int = Field(default=5, description="Max AI calls per polling cycle")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -83,6 +95,11 @@ class Settings(BaseSettings):
     def telegram_configured(self) -> bool:
         """Check if Telegram is configured."""
         return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
+    def certain_outcome_configured(self) -> bool:
+        """Check if certain outcome detection is configured (needs API key)."""
+        return bool(self.anthropic_api_key and self.certain_outcome_enabled)
 
     @property
     def database_url(self) -> str:

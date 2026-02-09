@@ -31,6 +31,7 @@ from archantum.analysis.risk_score import ExecutionRiskScore
 from archantum.analysis.multi_outcome import MultiOutcomeArbitrage, MultiOutcomeTier
 from archantum.analysis.dependency import DependencyArbitrage
 from archantum.analysis.settlement import SettlementLagOpportunity
+from archantum.analysis.certain_outcome import CertainOutcomeOpportunity, CertainOutcomeTier
 from archantum.data.validator import ValidationResult
 
 
@@ -849,6 +850,83 @@ Yes: {price_b_cents}¢
         return AlertMessage(
             market_id=opp.market_id,
             alert_type="settlement_lag",
+            message=message,
+            details=opp.to_dict(),
+        )
+
+    def format_certain_outcome_alert(self, opp: CertainOutcomeOpportunity) -> AlertMessage:
+        """Format a certain outcome opportunity as an alert."""
+        if opp.tier == CertainOutcomeTier.VERIFIED:
+            emoji = "🎯✅✅"
+            title = "AI-VERIFIED CERTAIN OUTCOME"
+        else:
+            emoji = "🎯✅"
+            title = "HIGH CONFIDENCE OUTCOME"
+
+        buy_price_cents = int(opp.buy_price * 100)
+        profit_cents = opp.profit_per_share_cents
+
+        # Time until resolution
+        hours = opp.hours_until_resolution
+        if hours < 1:
+            time_str = f"{int(hours * 60)} minutes"
+        elif hours < 24:
+            time_str = f"{hours:.1f} hours"
+        else:
+            time_str = f"{hours / 24:.1f} days"
+
+        # AI verification section
+        ai = opp.ai_result
+        if ai.error:
+            ai_section = "\n<b>AI Verification:</b> Unavailable (signal-only)"
+        else:
+            det_emoji = "✅" if ai.determined else "❌"
+            ai_section = f"""
+<b>AI Verification:</b>
+  Determined: {det_emoji} {"Yes" if ai.determined else "No"}
+  Confidence: {ai.confidence:.0%}
+  {ai.reasoning}"""
+
+        # Signal scores
+        sig = opp.signal_score
+        signal_section = f"""
+<b>Signal Scores:</b>
+  Stability: {sig.stability_score:.0%}
+  Volume: {sig.volume_score:.0%}
+  Cross-platform: {sig.cross_platform_score:.0%}"""
+
+        # Estimated returns
+        profit_100 = opp.calculate_profit(100)
+        profit_500 = opp.calculate_profit(500)
+        profit_1000 = opp.calculate_profit(1000)
+
+        link = opp.polymarket_url or "N/A"
+
+        end_date_text = ""
+        if opp.end_date:
+            end_date_text = f"\n<b>End Date:</b> {opp.end_date.strftime('%Y-%m-%d %H:%M UTC')}"
+
+        message = f"""{emoji} <b>{title}</b>
+
+<b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
+
+📥 <b>BUY {opp.buy_side}</b> @ {buy_price_cents}¢
+💰 <b>Profit:</b> {profit_cents:.1f}¢/share on resolution
+⏰ <b>Resolves in:</b> {time_str}{end_date_text}
+📊 <b>Combined Score:</b> {opp.combined_score:.0%}
+{ai_section}
+{signal_section}
+
+<b>Estimated Returns:</b>
+  $100 → ${profit_100:.2f} profit
+  $500 → ${profit_500:.2f} profit
+  $1000 → ${profit_1000:.2f} profit
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=opp.market_id,
+            alert_type="certain_outcome",
             message=message,
             details=opp.to_dict(),
         )
