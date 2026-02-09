@@ -50,6 +50,7 @@ class SettlementLagDetector:
         self.extreme_threshold = settings.settlement_extreme_threshold
         self.min_movement_pct = settings.settlement_min_movement_pct
         self.min_profit_cents = settings.settlement_min_profit_cents
+        self.max_days_to_resolution = settings.settlement_max_days_to_resolution
 
     async def analyze(
         self,
@@ -62,9 +63,22 @@ class SettlementLagDetector:
         opportunities = []
         one_hour_ago = datetime.utcnow() - timedelta(hours=1)
 
+        now = datetime.utcnow()
+        max_resolution = now + timedelta(days=self.max_days_to_resolution)
+
         for market in markets:
             price_data = prices.get(market.id)
             if not price_data or price_data.yes_price is None:
+                continue
+
+            # Skip markets without a resolution date or resolving too far out
+            if not market.end_date:
+                continue
+            try:
+                end_dt = datetime.fromisoformat(market.end_date.replace("Z", "+00:00")).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                continue
+            if end_dt > max_resolution:
                 continue
 
             yes_price = price_data.yes_price
