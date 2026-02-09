@@ -97,6 +97,10 @@ class PollingEngine:
             CertainOutcomeDetector(self.db) if settings.certain_outcome_configured else None
         )
 
+        # Global alert dedup: (market_id, alert_type) -> last sent timestamp
+        self._alert_cooldowns: dict[tuple[str, str], datetime] = {}
+        self._alert_cooldown_hours = 1.0  # Don't re-alert same market+type within 1 hour
+
         self.running = False
         self._smart_money_poll_count = 0  # Track polls for less frequent smart money sync
         self._ta_poll_count = 0  # Track polls for TA calculation
@@ -493,8 +497,10 @@ class PollingEngine:
                     except Exception as e:
                         console.print(f"[yellow]Certain outcome error: {e}[/yellow]")
 
-            # Send alerts
+            # Send alerts (with 1h dedup cooldown per market+type)
             for opp in arbitrage_opps:
+                if not self._should_send_alert(opp.market_id, "arbitrage"):
+                    continue
                 enrichment_data = arb_enrichments.get(opp.market_id)
                 enriched, risk = enrichment_data if enrichment_data else (None, None)
 
@@ -513,6 +519,7 @@ class PollingEngine:
                     guaranteed_profit=gp, reason=reason,
                 )
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(opp.market_id, "arbitrage")
                 results["alerts_sent"] += 1
 
                 # Speed tracking: record alert sent
@@ -522,40 +529,63 @@ class PollingEngine:
                     pass
 
             for move in price_moves:
+                if not self._should_send_alert(move.market_id, "price_move"):
+                    continue
                 alert = self.alerter.format_price_move_alert(move)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(move.market_id, "price_move")
                 results["alerts_sent"] += 1
 
             for whale in whale_activities:
+                if not self._should_send_alert(whale.market_id, "whale"):
+                    continue
                 alert = self.alerter.format_whale_alert(whale)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(whale.market_id, "whale")
                 results["alerts_sent"] += 1
 
             for new_market in new_markets:
+                if not self._should_send_alert(new_market.market_id, "new_market"):
+                    continue
                 alert = self.alerter.format_new_market_alert(new_market)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(new_market.market_id, "new_market")
                 results["alerts_sent"] += 1
 
             for resolution in resolution_alerts:
+                if not self._should_send_alert(resolution.market_id, "resolution"):
+                    continue
                 alert = self.alerter.format_resolution_alert(resolution)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(resolution.market_id, "resolution")
                 results["alerts_sent"] += 1
 
             for smart_alert in smart_money_alerts:
+                mid = smart_alert.event_slug or "smart_money"
+                if not self._should_send_alert(mid, "smart_money"):
+                    continue
                 alert = self.alerter.format_smart_money_alert(smart_alert)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(mid, "smart_money")
                 results["alerts_sent"] += 1
 
             # Send confluence alerts
             for signal in confluence_signals:
+                if not self._should_send_alert(signal.market_id, "confluence"):
+                    continue
                 alert = self.alerter.format_confluence_alert(signal)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(signal.market_id, "confluence")
                 results["alerts_sent"] += 1
 
             # Send cross-platform arbitrage alerts
             for cross_opp in cross_platform_opps:
+                cross_mid = f"cross_{cross_opp.polymarket_id}_{cross_opp.kalshi_ticker}"
+                if not self._should_send_alert(cross_mid, "cross_platform"):
+                    continue
                 alert = self.alerter.format_cross_platform_alert(cross_opp)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(cross_mid, "cross_platform")
                 results["alerts_sent"] += 1
 
             # Deviation tracking + enrichment for multi-outcome opps
@@ -574,26 +604,40 @@ class PollingEngine:
 
             # Send multi-outcome arbitrage alerts
             for mo_opp in multi_outcome_opps:
+                mo_mid = f"multi_{mo_opp.event_slug}"
+                if not self._should_send_alert(mo_mid, "multi_outcome"):
+                    continue
                 alert = self.alerter.format_multi_outcome_alert(mo_opp)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(mo_mid, "multi_outcome")
                 results["alerts_sent"] += 1
 
             # Send dependency arbitrage alerts
             for dep_opp in dependency_opps:
+                dep_mid = f"dep_{dep_opp.market_a_id}_{dep_opp.market_b_id}"
+                if not self._should_send_alert(dep_mid, "dependency"):
+                    continue
                 alert = self.alerter.format_dependency_alert(dep_opp)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(dep_mid, "dependency")
                 results["alerts_sent"] += 1
 
             # Send settlement lag alerts
             for s_opp in settlement_opps:
+                if not self._should_send_alert(s_opp.market_id, "settlement_lag"):
+                    continue
                 alert = self.alerter.format_settlement_lag_alert(s_opp)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(s_opp.market_id, "settlement_lag")
                 results["alerts_sent"] += 1
 
             # Send certain outcome alerts
             for co_opp in certain_outcome_opps:
+                if not self._should_send_alert(co_opp.market_id, "certain_outcome"):
+                    continue
                 alert = self.alerter.format_certain_outcome_alert(co_opp)
                 await self.alerter.send_alert(alert)
+                self._mark_alert_sent(co_opp.market_id, "certain_outcome")
                 results["alerts_sent"] += 1
 
             # Speed tracking: check which opportunities are still available
@@ -716,6 +760,21 @@ class PollingEngine:
         if market.events and len(market.events) > 0:
             return market.events[0].get("slug")
         return market.event_slug
+
+    def _should_send_alert(self, market_id: str, alert_type: str) -> bool:
+        """Check if an alert should be sent (dedup cooldown)."""
+        key = (market_id, alert_type)
+        now = datetime.utcnow()
+        last_sent = self._alert_cooldowns.get(key)
+        if last_sent is not None:
+            hours_since = (now - last_sent).total_seconds() / 3600
+            if hours_since < self._alert_cooldown_hours:
+                return False
+        return True
+
+    def _mark_alert_sent(self, market_id: str, alert_type: str) -> None:
+        """Record that an alert was sent for dedup tracking."""
+        self._alert_cooldowns[(market_id, alert_type)] = datetime.utcnow()
 
     def _build_polymarket_url(self, market: GammaMarket) -> str | None:
         """Build Polymarket URL for a market."""
