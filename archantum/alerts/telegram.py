@@ -823,11 +823,19 @@ Yes: {price_b_cents}¢
         """Format a settlement lag opportunity as an alert."""
         price_cents = int(opp.current_yes_price * 100)
         expected_cents = int(opp.expected_settlement * 100)
+        profit_cents = opp.potential_profit_cents
 
-        price_1h_text = ""
-        if opp.price_1h_ago is not None:
-            price_1h_cents = int(opp.price_1h_ago * 100)
-            price_1h_text = f"\n<b>1h ago:</b> {price_1h_cents}¢"
+        # Strategy description
+        if opp.expected_settlement == 0.0:
+            strategy = f"Buy NO at {100 - price_cents}¢, receive 100¢ at settlement"
+            settle_label = "NO"
+        else:
+            strategy = f"Buy YES at {price_cents}¢, receive 100¢ at settlement"
+            settle_label = "YES"
+
+        # Estimated returns
+        profit_100 = (profit_cents / 100) * 100  # on $100
+        profit_500 = (profit_cents / 100) * 500
 
         volume_text = ""
         if opp.volume_24hr is not None:
@@ -839,9 +847,13 @@ Yes: {price_b_cents}¢
 
 <b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
 
-<b>Current:</b> {price_cents}¢ → <b>Expected:</b> {expected_cents}¢{price_1h_text}
-<b>Movement:</b> {opp.price_change_pct:.1f}% in last hour
-<b>Potential:</b> {opp.potential_profit_cents:.1f}¢/share on convergence{volume_text}
+<b>Current:</b> {price_cents}¢ → <b>Expected:</b> {expected_cents}¢
+<b>Profit if settles to {settle_label}:</b> {profit_cents:.1f}¢/share
+<b>Strategy:</b> {strategy}
+
+<b>Estimated Returns:</b>
+  $100 → ${profit_100:.2f} profit
+  $500 → ${profit_500:.2f} profit{volume_text}
 
 💡 <i>{REASON_EXPLANATIONS[OpportunityReason.SETTLEMENT_LAG]}</i>
 

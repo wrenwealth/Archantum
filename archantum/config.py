@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     # Settlement lag
     settlement_extreme_threshold: float = Field(default=0.95, description="Price threshold for extreme (>95¢ or <5¢)")
     settlement_min_movement_pct: float = Field(default=3.0, description="Min 1h price movement for settlement lag")
+    settlement_min_profit_cents: float = Field(default=3.0, description="Min potential profit in cents for settlement lag alerts")
 
     # Certain outcome detection (AI-verified)
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")

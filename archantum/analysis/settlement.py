@@ -49,6 +49,7 @@ class SettlementLagDetector:
         self.db = db
         self.extreme_threshold = settings.settlement_extreme_threshold
         self.min_movement_pct = settings.settlement_min_movement_pct
+        self.min_profit_cents = settings.settlement_min_profit_cents
 
     async def analyze(
         self,
@@ -106,7 +107,11 @@ class SettlementLagDetector:
             else:
                 direction = "converging_no"
                 expected = 0.0
-                profit_cents = yes_price * 100  # Sell YES at current price, settles to 0
+                profit_cents = yes_price * 100  # Buy NO at (1-yes_price), settles to 100¢
+
+            # Skip if no meaningful profit gap
+            if profit_cents < self.min_profit_cents:
+                continue
 
             # Build polymarket URL
             polymarket_url = None
