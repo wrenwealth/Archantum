@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
 
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
+from archantum.config import settings
 
 
 class DependencyType(Enum):
@@ -90,6 +92,10 @@ class DependencyAnalyzer:
         Groups markets by event, then checks all pairs within each event
         for logical dependencies and price violations.
         """
+        max_days = settings.dependency_max_days_to_resolution
+        now = datetime.utcnow()
+        max_resolution = now + timedelta(days=max_days)
+
         # Group by event slug
         event_groups: dict[str, list[GammaMarket]] = {}
         for market in markets:
@@ -101,6 +107,11 @@ class DependencyAnalyzer:
 
         for event_slug, event_markets in event_groups.items():
             if len(event_markets) < 2:
+                continue
+
+            # Skip events resolving too far out
+            earliest = self._get_earliest_end_date(event_markets)
+            if earliest is None or earliest > max_resolution:
                 continue
 
             # Check all pairs within the event
@@ -404,6 +415,20 @@ class DependencyAnalyzer:
                 )
 
         return None
+
+    def _get_earliest_end_date(self, event_markets: list[GammaMarket]) -> datetime | None:
+        """Get the earliest end date across all markets in the event."""
+        earliest = None
+        for m in event_markets:
+            if not m.end_date:
+                continue
+            try:
+                end_dt = datetime.fromisoformat(m.end_date.replace("Z", "+00:00")).replace(tzinfo=None)
+                if earliest is None or end_dt < earliest:
+                    earliest = end_dt
+            except (ValueError, AttributeError):
+                continue
+        return earliest
 
     def _get_event_slug(self, market: GammaMarket) -> str | None:
         """Get event slug from market."""

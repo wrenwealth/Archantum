@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # Multi-outcome arbitrage
     multi_outcome_max_days_to_resolution: int = Field(default=3, description="Max days until resolution for multi-outcome arb alerts")
 
+    # Dependency arbitrage
+    dependency_max_days_to_resolution: int = Field(default=3, description="Max days until resolution for dependency arb alerts")
+
     # Certain outcome detection (AI-verified)
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
     certain_outcome_enabled: bool = Field(default=True, description="Enable certain outcome detection")
