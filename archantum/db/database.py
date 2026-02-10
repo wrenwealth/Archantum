@@ -10,7 +10,7 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
-from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade, SystemState
+from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade, SystemState, WalletAnalysis, CopyTradeSubscription
 from archantum.api.gamma import GammaMarket
 from archantum.api.clob import PriceData
 
@@ -972,3 +972,132 @@ class Database:
                         pass
 
             return False
+
+    # Wallet Analysis operations
+    async def save_wallet_analysis(self, wallet_id: int, analysis_data: dict) -> WalletAnalysis:
+        """Upsert wallet analysis by wallet_id."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(WalletAnalysis).where(WalletAnalysis.wallet_id == wallet_id)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                for key, value in analysis_data.items():
+                    if hasattr(existing, key):
+                        setattr(existing, key, value)
+                existing.analyzed_at = datetime.utcnow()
+            else:
+                existing = WalletAnalysis(wallet_id=wallet_id, **analysis_data)
+                session.add(existing)
+
+            await session.commit()
+            await session.refresh(existing)
+            return existing
+
+    async def get_wallet_analysis(self, wallet_address: str) -> WalletAnalysis | None:
+        """Get wallet analysis by address (joins through SmartWallet)."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(WalletAnalysis)
+                .join(SmartWallet)
+                .where(SmartWallet.wallet_address == wallet_address)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_all_wallet_trades(self, wallet_address: str) -> list[SmartTrade]:
+        """Get ALL trades for a wallet ordered chronologically (no limit)."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartTrade)
+                .join(SmartWallet)
+                .where(SmartWallet.wallet_address == wallet_address)
+                .order_by(SmartTrade.timestamp.asc())
+            )
+            return list(result.scalars().all())
+
+    async def get_wallets_needing_analysis_refresh(self, max_age_hours: int = 24) -> list[SmartWallet]:
+        """Get tracked wallets with stale or missing analysis."""
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartWallet)
+                .outerjoin(WalletAnalysis)
+                .where(SmartWallet.is_tracked == True)
+                .where(
+                    (WalletAnalysis.id == None) |
+                    (WalletAnalysis.analyzed_at < cutoff)
+                )
+            )
+            return list(result.scalars().all())
+
+    # Copy Trade Subscription operations
+    async def add_copy_subscription(
+        self, chat_id: str, wallet_id: int, min_usdc: float = 100.0
+    ) -> CopyTradeSubscription | None:
+        """Add a copy trade subscription. Returns None if already exists."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(CopyTradeSubscription)
+                .where(
+                    CopyTradeSubscription.chat_id == chat_id,
+                    CopyTradeSubscription.wallet_id == wallet_id,
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                return None
+
+            sub = CopyTradeSubscription(
+                chat_id=chat_id,
+                wallet_id=wallet_id,
+                min_usdc=min_usdc,
+            )
+            session.add(sub)
+            await session.commit()
+            await session.refresh(sub)
+            return sub
+
+    async def remove_copy_subscription(self, chat_id: str, wallet_address: str) -> bool:
+        """Remove a copy trade subscription by wallet address."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(CopyTradeSubscription)
+                .join(SmartWallet)
+                .where(
+                    CopyTradeSubscription.chat_id == chat_id,
+                    SmartWallet.wallet_address == wallet_address,
+                )
+            )
+            sub = result.scalar_one_or_none()
+            if sub:
+                await session.delete(sub)
+                await session.commit()
+                return True
+            return False
+
+    async def get_copy_subscriptions_for_chat(
+        self, chat_id: str
+    ) -> list[tuple[CopyTradeSubscription, SmartWallet]]:
+        """Get all copy trade subscriptions for a chat."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(CopyTradeSubscription, SmartWallet)
+                .join(SmartWallet)
+                .where(CopyTradeSubscription.chat_id == chat_id)
+                .where(CopyTradeSubscription.enabled == True)
+            )
+            return list(result.all())
+
+    async def get_all_active_copy_subscriptions(
+        self,
+    ) -> list[tuple[CopyTradeSubscription, SmartWallet]]:
+        """Get all active copy trade subscriptions across all chats."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(CopyTradeSubscription, SmartWallet)
+                .join(SmartWallet)
+                .where(CopyTradeSubscription.enabled == True)
+            )
+            return list(result.all())

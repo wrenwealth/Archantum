@@ -20,6 +20,7 @@ from archantum.api import GammaClient
 from archantum.analysis.historical import HistoricalAnalyzer
 from archantum.analysis.smartmoney import SmartMoneyTracker
 from archantum.analysis.esports import EsportsArbitrageAnalyzer
+from archantum.analysis.wallet_strategy import WalletStrategyAnalyzer
 
 
 console = Console()
@@ -37,6 +38,7 @@ class TelegramBot:
             min_trade_usdc=settings.smart_money_min_trade_usdc,
             top_wallets_count=settings.smart_money_top_wallets,
         )
+        self.wallet_analyzer = WalletStrategyAnalyzer(db)
 
     async def start(self):
         """Start the bot."""
@@ -83,6 +85,12 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("addwallet", self.cmd_addwallet))
         self.application.add_handler(CommandHandler("removewallet", self.cmd_removewallet))
 
+        # Wallet strategy analysis
+        self.application.add_handler(CommandHandler("analyze_wallet", self.cmd_analyze_wallet))
+        self.application.add_handler(CommandHandler("wallet_trades", self.cmd_wallet_trades))
+        self.application.add_handler(CommandHandler("wallet_positions", self.cmd_wallet_positions))
+        self.application.add_handler(CommandHandler("wallet_copy", self.cmd_wallet_copy))
+
         # Esports scanner
         self.application.add_handler(CommandHandler("esports", self.cmd_esports))
 
@@ -110,6 +118,10 @@ class TelegramBot:
             BotCommand("wallet", "Wallet details"),
             BotCommand("addwallet", "Track a wallet by address"),
             BotCommand("removewallet", "Stop tracking a wallet"),
+            BotCommand("analyze_wallet", "Full wallet strategy analysis"),
+            BotCommand("wallet_trades", "Recent wallet trades"),
+            BotCommand("wallet_positions", "Open wallet positions"),
+            BotCommand("wallet_copy", "Copy trade alerts"),
             BotCommand("accuracy", "Signal accuracy stats"),
             BotCommand("esports", "Esports markets & arb scan"),
             BotCommand("stats", "Alert statistics"),
@@ -193,6 +205,12 @@ Use /help to see all available commands."""
 /addwallet &lt;address&gt; - Track a wallet
 /removewallet &lt;address&gt; - Stop tracking
 /syncwallets - Sync leaderboard wallets
+
+<b>Wallet Strategy:</b>
+/analyze_wallet &lt;address&gt; - Full strategy analysis
+/wallet_trades &lt;address&gt; [count] - Recent trades
+/wallet_positions &lt;address&gt; - Open positions
+/wallet_copy [address] [min_usdc] - Copy trade alerts
 
 <b>Stats:</b>
 /stats - Alert statistics
@@ -1090,3 +1108,306 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error removing wallet: {e}")
+
+    # Wallet strategy commands
+    async def cmd_analyze_wallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /analyze_wallet command — full strategy analysis."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /analyze_wallet <address>\n"
+                "Example: /analyze_wallet 0x7c3d..."
+            )
+            return
+
+        address = context.args[0].lower()
+
+        if not address.startswith("0x") or len(address) != 42:
+            await update.message.reply_text(
+                "Invalid address. Must be a 42-character Ethereum address starting with 0x."
+            )
+            return
+
+        await update.message.reply_text("Fetching trade history & analyzing... (this may take a moment)")
+
+        try:
+            # Ensure wallet exists in DB
+            wallet = await self.db.get_smart_wallet(address)
+            if not wallet:
+                wallet = await self.db.upsert_smart_wallet(wallet_address=address)
+
+            # Fetch all trades
+            new_trades = await self.wallet_analyzer.fetch_all_trades(address)
+
+            # Run analysis
+            result = await self.wallet_analyzer.analyze(address)
+            if not result:
+                await update.message.reply_text(
+                    f"No trades found for wallet <code>{address[:10]}...</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            # Format and send report (may need multiple messages)
+            messages = self._format_wallet_analysis(result, address, wallet)
+            for msg in messages:
+                await update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
+
+        except Exception as e:
+            await update.message.reply_text(f"Error analyzing wallet: {e}")
+
+    def _format_wallet_analysis(
+        self, result, address: str, wallet
+    ) -> list[str]:
+        """Format wallet analysis into message parts (split at 4096 chars)."""
+        import json
+
+        profile_url = f"https://polymarket.com/profile/{address}"
+        name = wallet.username or f"{address[:10]}..."
+
+        # Part 1: Basic + Entry + Exit
+        win_emoji = "🟢" if result.win_rate >= 50 else "🔴"
+        roi_emoji = "📈" if result.roi_pct >= 0 else "📉"
+
+        part1 = f"""🧠 <b>Wallet Strategy Analysis</b>
+<b>Trader:</b> <a href='{profile_url}'>{name}</a>
+<code>{address}</code>
+
+<b>📊 Basic Stats</b>
+  Total trades: {result.total_trades}
+  Buys: {result.total_buys} | Sells: {result.total_sells}
+  Volume: ${result.total_usdc_volume:,.0f}
+  {roi_emoji} Realized PnL: ${result.realized_pnl:,.2f} ({result.roi_pct:+.1f}%)
+  {win_emoji} Win rate: {result.win_rate:.1f}% ({result.win_count}W / {result.loss_count}L)
+  Open positions: {result.open_positions}
+
+<b>📥 Entry Strategy</b>"""
+
+        if result.avg_entry_price is not None:
+            part1 += f"\n  Avg entry: ${result.avg_entry_price:.2f} | Median: ${result.median_entry_price:.2f}"
+        if result.yes_preference_pct is not None:
+            pref = "YES-heavy" if result.yes_preference_pct > 60 else "NO-heavy" if result.yes_preference_pct < 40 else "Balanced"
+            part1 += f"\n  YES preference: {result.yes_preference_pct:.0f}% ({pref})"
+        if result.avg_position_usdc is not None:
+            part1 += f"\n  Position size: ${result.avg_position_usdc:,.0f} avg / ${result.median_position_usdc:,.0f} median"
+
+        part1 += "\n\n<b>📤 Exit Strategy</b>"
+        if result.hold_to_settlement_pct is not None:
+            part1 += f"\n  Hold to settlement: {result.hold_to_settlement_pct:.0f}%"
+            part1 += f"\n  Early exit: {result.early_exit_pct:.0f}%"
+        if result.avg_hold_hours is not None:
+            if result.avg_hold_hours >= 24:
+                hold_str = f"{result.avg_hold_hours / 24:.1f} days"
+            else:
+                hold_str = f"{result.avg_hold_hours:.1f} hours"
+            part1 += f"\n  Avg hold time: {hold_str}"
+
+        # Part 2: Category + Patterns + Risk
+        part2 = "<b>📂 Category Breakdown</b>"
+        if result.category_breakdown:
+            try:
+                cats = json.loads(result.category_breakdown)
+                for cat, data in list(cats.items())[:6]:
+                    wr = data.get("win_rate", 0)
+                    vol = data.get("volume", 0)
+                    part2 += f"\n  {cat.title()}: ${vol:,.0f} vol | {wr:.0f}% WR"
+            except (json.JSONDecodeError, TypeError):
+                part2 += "\n  N/A"
+        else:
+            part2 += "\n  N/A"
+
+        part2 += "\n\n<b>🔍 Pattern Detection</b>"
+        if result.avg_trades_per_day is not None:
+            part2 += f"\n  Avg trades/day: {result.avg_trades_per_day:.1f}"
+        if result.contrarian_score is not None:
+            con_label = "High" if result.contrarian_score > 30 else "Medium" if result.contrarian_score > 15 else "Low"
+            part2 += f"\n  Contrarian score: {result.contrarian_score:.0f}% ({con_label})"
+        if result.most_active_hours:
+            try:
+                hours = json.loads(result.most_active_hours)
+                hour_strs = [f"{h['hour']}:00" for h in hours[:3]]
+                part2 += f"\n  Most active: {', '.join(hour_strs)} UTC"
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        part2 += "\n\n<b>⚠️ Risk Profile</b>"
+        if result.max_position_usdc is not None:
+            part2 += f"\n  Max position: ${result.max_position_usdc:,.0f}"
+        if result.unique_markets_traded is not None:
+            part2 += f"\n  Unique markets: {result.unique_markets_traded}"
+        if result.diversification_score is not None:
+            div_label = "High" if result.diversification_score > 70 else "Medium" if result.diversification_score > 40 else "Low"
+            part2 += f"\n  Diversification: {result.diversification_score:.0f}% ({div_label})"
+        if result.max_drawdown_pct is not None:
+            part2 += f"\n  Max drawdown: {result.max_drawdown_pct:.1f}%"
+
+        if result.first_trade_at and result.last_trade_at:
+            part2 += f"\n\n<i>Analysis based on {result.trades_analyzed} trades"
+            part2 += f" ({result.first_trade_at.strftime('%Y-%m-%d')} to {result.last_trade_at.strftime('%Y-%m-%d')})</i>"
+
+        return [part1, part2]
+
+    async def cmd_wallet_trades(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /wallet_trades command — show recent trades."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /wallet_trades <address> [count]\n"
+                "Default: 20 trades, max: 50"
+            )
+            return
+
+        address = context.args[0].lower()
+        count = 20
+        if len(context.args) > 1:
+            try:
+                count = min(int(context.args[1]), 50)
+            except ValueError:
+                pass
+
+        try:
+            trades = await self.db.get_wallet_trades(address, limit=count)
+
+            if not trades:
+                await update.message.reply_text(f"No trades found for wallet.")
+                return
+
+            text = f"<b>Recent Trades</b> (<code>{address[:10]}...</code>)\n\n"
+            for t in trades:
+                side_emoji = "🟢" if t.side == "BUY" else "🔴"
+                ts = t.timestamp.strftime("%m/%d %H:%M")
+                text += (
+                    f"{side_emoji} {t.side} {t.outcome} @ ${t.price:.2f} "
+                    f"(${t.usdc_size:,.0f})\n"
+                    f"   {t.market_title[:45]}{'...' if len(t.market_title) > 45 else ''}\n"
+                    f"   {ts}\n\n"
+                )
+
+                if len(text) > 3800:
+                    text += "<i>...truncated</i>"
+                    break
+
+            await update.message.reply_text(text, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching trades: {e}")
+
+    async def cmd_wallet_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /wallet_positions command — show open positions."""
+        if not context.args:
+            await update.message.reply_text("Usage: /wallet_positions <address>")
+            return
+
+        address = context.args[0].lower()
+
+        try:
+            trades = await self.db.get_all_wallet_trades(address)
+            if not trades:
+                await update.message.reply_text("No trades found for this wallet.")
+                return
+
+            positions = WalletStrategyAnalyzer._build_positions(trades)
+            open_positions = [p for p in positions if not p.is_closed]
+
+            if not open_positions:
+                await update.message.reply_text(
+                    f"No open positions for <code>{address[:10]}...</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            text = f"<b>Open Positions</b> (<code>{address[:10]}...</code>)\n\n"
+            for p in open_positions[:20]:
+                remaining = p.total_bought - p.total_sold
+                avg_buy = p.total_buy_cost / p.total_bought if p.total_bought > 0 else 0
+                cost = remaining * avg_buy
+
+                text += (
+                    f"• <b>{p.market_title[:50]}{'...' if len(p.market_title) > 50 else ''}</b>\n"
+                    f"  {p.outcome} | Avg: ${avg_buy:.2f} | {remaining:.0f} shares | ${cost:,.0f}\n\n"
+                )
+
+                if len(text) > 3800:
+                    text += "<i>...truncated</i>"
+                    break
+
+            await update.message.reply_text(text, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error fetching positions: {e}")
+
+    async def cmd_wallet_copy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /wallet_copy command — manage copy trade subscriptions."""
+        chat_id = str(update.effective_chat.id)
+
+        # No args: list current subscriptions
+        if not context.args:
+            try:
+                subs = await self.db.get_copy_subscriptions_for_chat(chat_id)
+                if not subs:
+                    await update.message.reply_text(
+                        "No copy trade subscriptions.\n\n"
+                        "Usage: /wallet_copy <address> [min_usdc]\n"
+                        "Example: /wallet_copy 0x7c3d... 200"
+                    )
+                    return
+
+                text = "📋 <b>Copy Trade Subscriptions</b>\n\n"
+                for sub, wallet in subs:
+                    name = wallet.username or f"{wallet.wallet_address[:10]}..."
+                    text += (
+                        f"• <b>{name}</b>\n"
+                        f"  <code>{wallet.wallet_address}</code>\n"
+                        f"  Min size: ${sub.min_usdc:,.0f}\n\n"
+                    )
+                text += "Use /wallet_copy <address> to toggle off"
+                await update.message.reply_text(text, parse_mode="HTML")
+                return
+
+            except Exception as e:
+                await update.message.reply_text(f"Error: {e}")
+                return
+
+        # With address: toggle subscription
+        address = context.args[0].lower()
+
+        if not address.startswith("0x") or len(address) != 42:
+            await update.message.reply_text(
+                "Invalid address. Must be a 42-character Ethereum address starting with 0x."
+            )
+            return
+
+        min_usdc = settings.copy_trade_min_usdc
+        if len(context.args) > 1:
+            try:
+                min_usdc = float(context.args[1])
+            except ValueError:
+                pass
+
+        try:
+            # Check if subscription exists — if so, remove (toggle off)
+            removed = await self.db.remove_copy_subscription(chat_id, address)
+            if removed:
+                await update.message.reply_text(
+                    f"🔕 Copy trade alerts <b>disabled</b> for:\n"
+                    f"<code>{address}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            # Otherwise, add new subscription
+            wallet = await self.db.get_smart_wallet(address)
+            if not wallet:
+                wallet = await self.db.upsert_smart_wallet(wallet_address=address)
+
+            sub = await self.db.add_copy_subscription(chat_id, wallet.id, min_usdc)
+            if sub:
+                await update.message.reply_text(
+                    f"🔔 Copy trade alerts <b>enabled</b> for:\n"
+                    f"<code>{address}</code>\n"
+                    f"Min trade size: ${min_usdc:,.0f}",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text("Subscription already exists.")
+
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")

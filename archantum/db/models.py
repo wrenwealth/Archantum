@@ -218,6 +218,78 @@ class SmartTrade(Base):
     wallet = relationship("SmartWallet", back_populates="trades")
 
 
+class WalletAnalysis(Base):
+    """Cached wallet strategy analysis results."""
+
+    __tablename__ = "wallet_analyses"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    wallet_id = Column(Integer, ForeignKey("smart_wallets.id"), unique=True, nullable=False)
+
+    # Basic stats
+    total_trades = Column(Integer, default=0)
+    total_buys = Column(Integer, default=0)
+    total_sells = Column(Integer, default=0)
+    total_usdc_volume = Column(Float, default=0.0)
+    realized_pnl = Column(Float, default=0.0)
+    roi_pct = Column(Float, default=0.0)
+    win_count = Column(Integer, default=0)
+    loss_count = Column(Integer, default=0)
+    open_positions = Column(Integer, default=0)
+    win_rate = Column(Float, default=0.0)
+
+    # Entry analysis
+    avg_entry_price = Column(Float, nullable=True)
+    median_entry_price = Column(Float, nullable=True)
+    yes_preference_pct = Column(Float, nullable=True)
+    avg_position_usdc = Column(Float, nullable=True)
+    median_position_usdc = Column(Float, nullable=True)
+
+    # Exit analysis
+    hold_to_settlement_pct = Column(Float, nullable=True)
+    early_exit_pct = Column(Float, nullable=True)
+    avg_hold_hours = Column(Float, nullable=True)
+
+    # Category breakdown (JSON)
+    category_breakdown = Column(Text, nullable=True)
+
+    # Pattern detection
+    most_active_hours = Column(Text, nullable=True)  # JSON
+    avg_trades_per_day = Column(Float, nullable=True)
+    contrarian_score = Column(Float, nullable=True)
+
+    # Risk analysis
+    max_position_usdc = Column(Float, nullable=True)
+    max_drawdown_pct = Column(Float, nullable=True)
+    unique_markets_traded = Column(Integer, nullable=True)
+    diversification_score = Column(Float, nullable=True)
+
+    # Meta
+    trades_analyzed = Column(Integer, default=0)
+    first_trade_at = Column(DateTime, nullable=True)
+    last_trade_at = Column(DateTime, nullable=True)
+    analyzed_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship
+    wallet = relationship("SmartWallet")
+
+
+class CopyTradeSubscription(Base):
+    """Per-chat copy trade alert subscriptions."""
+
+    __tablename__ = "copy_trade_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String, nullable=False)
+    wallet_id = Column(Integer, ForeignKey("smart_wallets.id"), nullable=False)
+    min_usdc = Column(Float, default=100.0)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship
+    wallet = relationship("SmartWallet")
+
+
 class DataSourceLog(Base):
     """Logs for data source requests and reliability tracking."""
 

@@ -28,6 +28,7 @@ from archantum.analysis.speed_tracker import SpeedTracker
 from archantum.analysis.settlement import SettlementLagDetector
 from archantum.analysis.certain_outcome import CertainOutcomeDetector
 from archantum.analysis.esports import EsportsArbitrageAnalyzer
+from archantum.analysis.wallet_strategy import WalletStrategyAnalyzer
 from archantum.analysis.arbitrage import (
     calculate_guaranteed_profit,
     classify_opportunity_reason,
@@ -101,6 +102,9 @@ class PollingEngine:
         # Esports arbitrage scanner
         self.esports_analyzer = EsportsArbitrageAnalyzer() if settings.esports_enabled else None
 
+        # Wallet strategy analyzer
+        self.wallet_strategy_analyzer = WalletStrategyAnalyzer(self.db) if settings.wallet_analysis_enabled else None
+
         # Global alert dedup: (market_id, alert_type) -> last sent timestamp
         self._alert_cooldowns: dict[tuple[str, str], datetime] = {}
         self._alert_cooldown_hours = 1.0  # Don't re-alert same market+type within 1 hour
@@ -113,6 +117,7 @@ class PollingEngine:
         self._advanced_arb_poll_count = 0  # Track polls for multi-outcome + dependency
         self._certain_outcome_poll_count = 0  # Track polls for certain outcome detection
         self._esports_poll_count = 0  # Track polls for esports scanner
+        self._wallet_analysis_poll_count = 0  # Track polls for wallet analysis refresh
 
     async def init(self):
         """Initialize the engine."""
@@ -517,6 +522,61 @@ class PollingEngine:
                     except Exception as e:
                         console.print(f"[yellow]Esports scanner error: {e}[/yellow]")
 
+            # 15. Wallet strategy auto-refresh + copy trade alerts
+            if self.wallet_strategy_analyzer:
+                self._wallet_analysis_poll_count += 1
+                if self._wallet_analysis_poll_count >= settings.wallet_analysis_poll_frequency:
+                    self._wallet_analysis_poll_count = 0
+                    try:
+                        console.print("[cyan]Refreshing wallet analyses...[/cyan]")
+                        refreshed = await self.wallet_strategy_analyzer.auto_refresh_analyses()
+                        if refreshed:
+                            console.print(f"[dim]Refreshed {len(refreshed)} wallet analyses[/dim]")
+                    except Exception as e:
+                        console.print(f"[yellow]Wallet analysis refresh error: {e}[/yellow]")
+
+                # Copy trade alerts: check recent trades for subscribed wallets
+                try:
+                    subs = await self.db.get_all_active_copy_subscriptions()
+                    if subs:
+                        # Group subscriptions by wallet
+                        wallet_subs: dict[int, list[tuple]] = {}
+                        for sub, wallet in subs:
+                            wallet_subs.setdefault(wallet.id, []).append((sub, wallet))
+
+                        for wallet_id, sub_list in wallet_subs.items():
+                            wallet = sub_list[0][1]
+                            # Get recent unsent trades for this wallet
+                            trades = await self.db.get_wallet_trades(
+                                wallet.wallet_address, limit=10
+                            )
+                            for trade in trades:
+                                if trade.alert_sent:
+                                    continue
+                                # Check each subscriber's min_usdc threshold
+                                target_chats = [
+                                    s.chat_id for s, w in sub_list
+                                    if trade.usdc_size >= s.min_usdc
+                                ]
+                                if target_chats:
+                                    alert = self.alerter.format_copy_trade_alert(
+                                        trade, wallet, target_chats
+                                    )
+                                    # Send to each subscriber chat
+                                    for chat_id in target_chats:
+                                        try:
+                                            await self.alerter.bot.send_message(
+                                                chat_id=chat_id,
+                                                text=alert.message,
+                                                parse_mode="HTML",
+                                            )
+                                        except Exception:
+                                            pass
+                                    await self.db.mark_trade_alerted(trade.id)
+                                    results["alerts_sent"] += 1
+                except Exception as e:
+                    console.print(f"[yellow]Copy trade alert error: {e}[/yellow]")
+
             # Send alerts (with 1h dedup cooldown per market+type)
             for opp in arbitrage_opps:
                 if not self._should_send_alert(opp.market_id, "arbitrage"):
@@ -876,6 +936,7 @@ class PollingEngine:
         self._advanced_arb_poll_count = 4
         self._certain_outcome_poll_count = 4
         self._esports_poll_count = settings.esports_poll_frequency - 1
+        self._wallet_analysis_poll_count = settings.wallet_analysis_poll_frequency - 1
 
     @staticmethod
     def _format_gap(seconds: float) -> str:
@@ -958,6 +1019,10 @@ class PollingEngine:
             console.print(f"[dim]Esports Scanner: Enabled (every {settings.esports_poll_frequency} polls)[/dim]")
         else:
             console.print(f"[dim]Esports Scanner: Disabled[/dim]")
+        if settings.wallet_analysis_enabled:
+            console.print(f"[dim]Wallet Strategy Analyzer: Enabled (every {settings.wallet_analysis_poll_frequency} polls)[/dim]")
+        else:
+            console.print(f"[dim]Wallet Strategy Analyzer: Disabled[/dim]")
         console.print()
 
         # Catch-up analysis after offline gap

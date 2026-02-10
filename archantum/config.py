@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     catchup_enabled: bool = Field(default=True, description="Enable catch-up analysis after offline gap")
     catchup_max_hours: int = Field(default=24, description="Max offline hours before warning in catch-up notification")
 
+    # Wallet strategy analysis
+    wallet_analysis_enabled: bool = Field(default=True, description="Enable wallet strategy analysis")
+    wallet_analysis_refresh_hours: int = Field(default=24, description="Hours between analysis refreshes")
+    wallet_analysis_poll_frequency: int = Field(default=10, description="Run wallet analysis every N polls")
+    copy_trade_min_usdc: float = Field(default=100.0, description="Default min USDC for copy trade alerts")
+
     # Esports arbitrage scanner
     esports_enabled: bool = Field(default=True, description="Enable esports arbitrage scanner")
     esports_poll_frequency: int = Field(default=2, description="Run esports scan every N polls")

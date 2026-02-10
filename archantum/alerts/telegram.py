@@ -1077,6 +1077,44 @@ Yes: {price_b_cents}¢
             details=opp.to_dict(),
         )
 
+    def format_copy_trade_alert(
+        self,
+        trade: "SmartTrade",
+        wallet: "SmartWallet",
+        chat_ids: list[str],
+    ) -> AlertMessage:
+        """Format a copy trade alert for subscribers."""
+        from archantum.db.models import SmartTrade, SmartWallet
+
+        side_emoji = "🟢" if trade.side == "BUY" else "🔴"
+        profile_url = f"https://polymarket.com/profile/{wallet.wallet_address}"
+        trader_name = wallet.username or f"{wallet.wallet_address[:8]}..."
+
+        market_link = "N/A"
+        if trade.event_slug:
+            market_link = f"https://polymarket.com/event/{trade.event_slug}"
+
+        message = f"""📋 <b>COPY TRADE ALERT</b>
+
+{side_emoji} <b>{trade.side}</b> {trade.outcome} @ ${trade.price:.2f}
+<b>Size:</b> ${trade.usdc_size:,.0f}
+
+<b>Trader:</b> <a href='{profile_url}'>{trader_name}</a>
+<b>Market:</b> {trade.market_title[:100]}{'...' if len(trade.market_title) > 100 else ''}
+
+📊 <a href="{market_link}">View on Polymarket</a>"""
+
+        return AlertMessage(
+            market_id=trade.event_slug or "copy_trade",
+            alert_type="copy_trade",
+            message=message,
+            details={
+                "trade_id": trade.id,
+                "wallet_address": wallet.wallet_address,
+                "chat_ids": chat_ids,
+            },
+        )
+
     async def send_test_alert(self) -> bool:
         """Send a test alert to verify configuration."""
         message = """🧪 <b>TEST ALERT</b>

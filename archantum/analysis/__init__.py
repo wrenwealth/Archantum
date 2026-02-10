@@ -27,6 +27,7 @@ from .speed_tracker import SpeedTracker
 from .settlement import SettlementLagDetector, SettlementLagOpportunity
 from .certain_outcome import CertainOutcomeDetector, CertainOutcomeOpportunity, CertainOutcomeTier
 from .esports import EsportsArbitrageAnalyzer, EsportsOpportunity, EsportsTier, EsportsGame
+from .wallet_strategy import WalletStrategyAnalyzer, WalletStrategyResult
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -78,4 +79,6 @@ __all__ = [
     "EsportsOpportunity",
     "EsportsTier",
     "EsportsGame",
+    "WalletStrategyAnalyzer",
+    "WalletStrategyResult",
 ]
