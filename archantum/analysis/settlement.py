@@ -26,6 +26,7 @@ class SettlementLagOpportunity:
     expected_settlement: float  # 1.0 or 0.0
     potential_profit_cents: float
     volume_24hr: float | None
+    end_date: datetime | None
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +40,7 @@ class SettlementLagOpportunity:
             "expected_settlement": self.expected_settlement,
             "potential_profit_cents": self.potential_profit_cents,
             "volume_24hr": self.volume_24hr,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
         }
 
 
@@ -146,6 +148,7 @@ class SettlementLagDetector:
                     expected_settlement=expected,
                     potential_profit_cents=profit_cents,
                     volume_24hr=market.volume_24hr,
+                    end_date=end_dt,
                 )
             )
 

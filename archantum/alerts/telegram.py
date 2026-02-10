@@ -821,6 +821,8 @@ Yes: {price_b_cents}¢
 
     def format_settlement_lag_alert(self, opp: SettlementLagOpportunity) -> AlertMessage:
         """Format a settlement lag opportunity as an alert."""
+        from datetime import datetime
+
         price_cents = int(opp.current_yes_price * 100)
         expected_cents = int(opp.expected_settlement * 100)
         profit_cents = opp.potential_profit_cents
@@ -832,6 +834,21 @@ Yes: {price_b_cents}¢
         else:
             strategy = f"Buy YES at {price_cents}¢, receive 100¢ at settlement"
             settle_label = "YES"
+
+        # Resolution timing
+        resolves_text = ""
+        if opp.end_date:
+            hours = (opp.end_date - datetime.utcnow()).total_seconds() / 3600
+            if hours < 1:
+                time_str = f"{max(int(hours * 60), 1)} minutes"
+                time_emoji = "⚡"
+            elif hours < 24:
+                time_str = f"{hours:.1f} hours"
+                time_emoji = "🔥"
+            else:
+                time_str = f"{hours / 24:.1f} days"
+                time_emoji = "📅"
+            resolves_text = f"\n{time_emoji} <b>Resolves in:</b> {time_str}"
 
         # Estimated returns
         profit_100 = (profit_cents / 100) * 100  # on $100
@@ -849,7 +866,7 @@ Yes: {price_b_cents}¢
 
 <b>Current:</b> {price_cents}¢ → <b>Expected:</b> {expected_cents}¢
 <b>Profit if settles to {settle_label}:</b> {profit_cents:.1f}¢/share
-<b>Strategy:</b> {strategy}
+<b>Strategy:</b> {strategy}{resolves_text}
 
 <b>Estimated Returns:</b>
   $100 → ${profit_100:.2f} profit
