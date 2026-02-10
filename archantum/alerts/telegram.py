@@ -69,6 +69,30 @@ class TelegramAlerter:
         """Check if Telegram is enabled."""
         return self.bot is not None
 
+    async def send_raw_message(self, text: str) -> bool:
+        """Send a raw message to Telegram without saving to DB or tracking accuracy.
+
+        Used for system notifications (online/offline status, catch-up reports).
+        Falls back to console if Telegram is not configured.
+        """
+        if self.telegram_enabled:
+            try:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                return True
+            except TelegramError as e:
+                console.print(f"[red]Telegram error: {e}[/red]")
+
+        # Console fallback
+        console.print(f"\n[bold yellow]{'=' * 50}[/bold yellow]")
+        console.print("[bold]SYSTEM NOTIFICATION[/bold]")
+        console.print(text)
+        console.print(f"[bold yellow]{'=' * 50}[/bold yellow]\n")
+        return False
+
     async def send_alert(self, alert: AlertMessage) -> bool:
         """Send an alert via Telegram or console fallback."""
         from datetime import datetime

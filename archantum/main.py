@@ -813,6 +813,120 @@ class PollingEngine:
             return f"https://polymarket.com/event/{event_slug}"
         return None
 
+    async def catch_up(self) -> dict[str, Any] | None:
+        """Detect offline gap and run catch-up analysis if needed.
+
+        Returns catch-up poll results dict, or None if no catch-up was needed.
+        """
+        if not settings.catchup_enabled:
+            console.print("[dim]Catch-up disabled via config[/dim]")
+            return None
+
+        # Read last_online timestamp from DB
+        last_online_str = await self.db.get_system_state("last_online")
+
+        now = datetime.utcnow()
+
+        if last_online_str is None:
+            # First run ever — set timestamp and skip catch-up
+            console.print("[green]First run detected — setting initial online timestamp[/green]")
+            await self.db.set_system_state("last_online", now.isoformat())
+            return None
+
+        # Parse the timestamp
+        try:
+            last_online = datetime.fromisoformat(last_online_str)
+        except (ValueError, TypeError):
+            console.print("[yellow]Corrupted last_online timestamp — resetting[/yellow]")
+            await self.db.set_system_state("last_online", now.isoformat())
+            return None
+
+        gap = now - last_online
+        gap_seconds = gap.total_seconds()
+
+        # Skip if gap is <= 1 minute (normal restart)
+        if gap_seconds <= 60:
+            console.print(f"[dim]No catch-up needed (offline {gap_seconds:.0f}s)[/dim]")
+            return None
+
+        gap_str = self._format_gap(gap_seconds)
+        console.print(f"[bold yellow]Offline gap detected: {gap_str}[/bold yellow]")
+
+        if gap_seconds > settings.catchup_max_hours * 3600:
+            console.print(f"[yellow]Gap exceeds {settings.catchup_max_hours}h — running catch-up on current state only[/yellow]")
+
+        # Run catch-up poll (triggers all analyzers)
+        console.print("[cyan]Running catch-up analysis (all analyzers)...[/cyan]")
+        self._run_catchup_poll()
+        results = await self.poll_once()
+
+        # Update last_online after catch-up
+        await self.db.set_system_state("last_online", now.isoformat())
+
+        results["_catchup_gap_seconds"] = gap_seconds
+        results["_catchup_gap_str"] = gap_str
+        return results
+
+    def _run_catchup_poll(self) -> None:
+        """Set all poll counters to threshold-1 so the next poll_once() triggers every analyzer."""
+        self._smart_money_poll_count = 4
+        self._ta_poll_count = settings.ta_poll_frequency - 1
+        self._scoring_poll_count = 4
+        self._cross_platform_poll_count = 4
+        self._advanced_arb_poll_count = 4
+        self._certain_outcome_poll_count = 4
+        self._esports_poll_count = settings.esports_poll_frequency - 1
+
+    @staticmethod
+    def _format_gap(seconds: float) -> str:
+        """Format a gap duration in human-readable form."""
+        if seconds < 3600:
+            return f"{seconds / 60:.0f} minutes"
+        elif seconds < 86400:
+            hours = seconds / 3600
+            return f"{hours:.1f} hours"
+        else:
+            days = seconds / 86400
+            return f"{days:.1f} days"
+
+    async def _send_startup_notification(self, catchup_results: dict[str, Any] | None) -> None:
+        """Send a Telegram notification about startup status."""
+        now = datetime.utcnow()
+        time_str = now.strftime("%Y-%m-%d %H:%M UTC")
+
+        if catchup_results is None:
+            # Normal startup, no catch-up
+            message = f"""🟢 <b>Archantum Online</b>
+
+<b>Started:</b> {time_str}
+<b>Catch-up:</b> Not needed"""
+        else:
+            gap_str = catchup_results.get("_catchup_gap_str", "unknown")
+            gap_seconds = catchup_results.get("_catchup_gap_seconds", 0)
+
+            # Warning if gap exceeds max hours
+            warning = ""
+            if gap_seconds > settings.catchup_max_hours * 3600:
+                warning = f"\n⚠️ <b>Offline exceeded {settings.catchup_max_hours}h — some opportunities may have been missed</b>"
+
+            message = f"""🟢 <b>Archantum Online</b> (catch-up complete)
+
+<b>Started:</b> {time_str}
+<b>Offline for:</b> {gap_str}{warning}
+
+<b>Catch-up scan results:</b>
+  Markets scanned: {catchup_results.get('markets_fetched', 0)}
+  Arbitrage opps: {catchup_results.get('arbitrage_opportunities', 0)}
+  Multi-outcome arbs: {catchup_results.get('multi_outcome_arbs', 0)}
+  Dependency arbs: {catchup_results.get('dependency_arbs', 0)}
+  Cross-platform arbs: {catchup_results.get('cross_platform_arbs', 0)}
+  Settlement lag opps: {catchup_results.get('settlement_lag_opps', 0)}
+  Certain outcome opps: {catchup_results.get('certain_outcome_opps', 0)}
+  Esports opps: {catchup_results.get('esports_opps', 0)}
+  Alerts sent: {catchup_results.get('alerts_sent', 0)}"""
+
+        await self.alerter.send_raw_message(message)
+
     async def run(self):
         """Run the main polling loop."""
         self.running = True
@@ -846,12 +960,25 @@ class PollingEngine:
             console.print(f"[dim]Esports Scanner: Disabled[/dim]")
         console.print()
 
+        # Catch-up analysis after offline gap
+        try:
+            catchup_results = await self.catch_up()
+            await self._send_startup_notification(catchup_results)
+        except Exception as e:
+            console.print(f"[red]Catch-up error (non-fatal): {e}[/red]")
+
         while self.running:
             try:
                 console.print(f"[bold]{'=' * 50}[/bold]")
                 console.print(f"[bold]Poll started at {datetime.utcnow().isoformat()}[/bold]")
 
                 results = await self.poll_once()
+
+                # Update last_online timestamp after each successful poll
+                try:
+                    await self.db.set_system_state("last_online", datetime.utcnow().isoformat())
+                except Exception:
+                    pass
 
                 console.print(f"[green]Poll complete:[/green]")
                 console.print(f"  Markets: {results['markets_fetched']}")

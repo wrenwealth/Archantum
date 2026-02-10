@@ -10,7 +10,7 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
-from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade
+from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade, SystemState
 from archantum.api.gamma import GammaMarket
 from archantum.api.clob import PriceData
 
@@ -29,6 +29,32 @@ class Database:
         """Initialize database tables."""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+    async def get_system_state(self, key: str) -> str | None:
+        """Get a system state value by key."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SystemState).where(SystemState.key == key)
+            )
+            state = result.scalar_one_or_none()
+            return state.value if state else None
+
+    async def set_system_state(self, key: str, value: str) -> None:
+        """Set a system state value (upsert)."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SystemState).where(SystemState.key == key)
+            )
+            state = result.scalar_one_or_none()
+
+            if state:
+                state.value = value
+                state.updated_at = datetime.utcnow()
+            else:
+                state = SystemState(key=key, value=value)
+                session.add(state)
+
+            await session.commit()
 
     async def close(self):
         """Close database connections."""

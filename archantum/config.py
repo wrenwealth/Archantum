@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     certain_outcome_cache_hours: float = Field(default=6.0, description="AI verification cache TTL in hours")
     certain_outcome_max_ai_calls_per_poll: int = Field(default=5, description="Max AI calls per polling cycle")
 
+    # Catch-up on restart
+    catchup_enabled: bool = Field(default=True, description="Enable catch-up analysis after offline gap")
+    catchup_max_hours: int = Field(default=24, description="Max offline hours before warning in catch-up notification")
+
     # Esports arbitrage scanner
     esports_enabled: bool = Field(default=True, description="Enable esports arbitrage scanner")
     esports_poll_frequency: int = Field(default=2, description="Run esports scan every N polls")

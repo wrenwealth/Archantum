@@ -345,6 +345,16 @@ class SumDeviationHistory(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 
+class SystemState(Base):
+    """Key-value store for system state (e.g., last_online timestamp)."""
+
+    __tablename__ = "system_state"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class SpeedSummary(Base):
     """Weekly speed summary statistics."""
 
