@@ -729,6 +729,22 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
 
         profit_1000 = opp.calculate_profit(1000)
 
+        # Resolution timing
+        resolves_text = ""
+        if opp.end_date:
+            from datetime import datetime
+            hours = (opp.end_date - datetime.utcnow()).total_seconds() / 3600
+            if hours < 1:
+                time_str = f"{max(int(hours * 60), 1)} minutes"
+                time_emoji = "⚡"
+            elif hours < 24:
+                time_str = f"{hours:.1f} hours"
+                time_emoji = "🔥"
+            else:
+                time_str = f"{hours / 24:.1f} days"
+                time_emoji = "📅"
+            resolves_text = f"\n{time_emoji} <b>Resolves in:</b> {time_str}"
+
         # Build outcome list
         outcome_lines = ""
         for o in opp.outcomes[:10]:  # Cap at 10 to avoid huge messages
@@ -746,7 +762,7 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
 
         message = f"""{emoji} <b>{title}</b>
 
-<b>Event:</b> {opp.event_name[:100]}{'...' if len(opp.event_name) > 100 else ''}
+<b>Event:</b> {opp.event_name[:100]}{'...' if len(opp.event_name) > 100 else ''}{resolves_text}
 <b>Outcomes:</b> {opp.outcome_count}
 <b>Total probability:</b> {total_pct:.1f}%
 <b>Gap:</b> {opp.gap_pct:.1f}%

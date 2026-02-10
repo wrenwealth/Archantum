@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     settlement_min_profit_cents: float = Field(default=3.0, description="Min potential profit in cents for settlement lag alerts")
     settlement_max_days_to_resolution: int = Field(default=3, description="Max days until resolution for settlement lag alerts")
 
+    # Multi-outcome arbitrage
+    multi_outcome_max_days_to_resolution: int = Field(default=3, description="Max days until resolution for multi-outcome arb alerts")
+
     # Certain outcome detection (AI-verified)
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
     certain_outcome_enabled: bool = Field(default=True, description="Enable certain outcome detection")

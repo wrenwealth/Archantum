@@ -10,6 +10,7 @@ from sqlalchemy import select, func
 
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
+from archantum.config import settings
 
 
 class MultiOutcomeTier(Enum):
@@ -43,6 +44,7 @@ class MultiOutcomeArbitrage:
     strategy: str             # 'buy_all' or 'sell_all'
     profit_per_dollar: float  # Profit per $1 invested
     tier: MultiOutcomeTier = MultiOutcomeTier.STANDARD
+    end_date: datetime | None = None
     historical_avg_deviation: float | None = None  # 7-day rolling avg
     deviation_multiplier: float | None = None      # current / historical
 
@@ -64,6 +66,7 @@ class MultiOutcomeArbitrage:
             "strategy": self.strategy,
             "profit_per_dollar": self.profit_per_dollar,
             "tier": self.tier.value,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
             "outcomes": [
                 {
                     "market_id": o.market_id,
@@ -93,6 +96,10 @@ class MultiOutcomeAnalyzer:
         Groups markets by event slug, filters to events with 3+ markets,
         and checks if sum of YES prices deviates from 1.0.
         """
+        max_days = settings.multi_outcome_max_days_to_resolution
+        now = datetime.utcnow()
+        max_resolution = now + timedelta(days=max_days)
+
         # Group markets by event slug
         event_groups: dict[str, list[GammaMarket]] = {}
         for market in markets:
@@ -105,6 +112,11 @@ class MultiOutcomeAnalyzer:
         for event_slug, event_markets in event_groups.items():
             # Only consider multi-outcome events (3+ markets)
             if len(event_markets) < 3:
+                continue
+
+            # Skip events resolving too far out
+            event_end_date = self._get_earliest_end_date(event_markets)
+            if event_end_date is None or event_end_date > max_resolution:
                 continue
 
             # Build outcome list with prices
@@ -148,6 +160,7 @@ class MultiOutcomeAnalyzer:
                         strategy="buy_all",
                         profit_per_dollar=profit_per_dollar,
                         tier=tier,
+                        end_date=event_end_date,
                     )
                 )
 
@@ -172,6 +185,7 @@ class MultiOutcomeAnalyzer:
                         strategy="sell_all",
                         profit_per_dollar=profit_per_dollar,
                         tier=tier,
+                        end_date=event_end_date,
                     )
                 )
 
@@ -199,6 +213,20 @@ class MultiOutcomeAnalyzer:
         if market.events and len(market.events) > 0:
             return market.events[0].get("slug")
         return market.event_slug
+
+    def _get_earliest_end_date(self, event_markets: list[GammaMarket]) -> datetime | None:
+        """Get the earliest end date across all markets in the event."""
+        earliest = None
+        for m in event_markets:
+            if not m.end_date:
+                continue
+            try:
+                end_dt = datetime.fromisoformat(m.end_date.replace("Z", "+00:00")).replace(tzinfo=None)
+                if earliest is None or end_dt < earliest:
+                    earliest = end_dt
+            except (ValueError, AttributeError):
+                continue
+        return earliest
 
     def _get_event_name(self, event_markets: list[GammaMarket]) -> str:
         """Extract event name from the first market's events data."""
