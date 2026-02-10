@@ -241,7 +241,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
   $500 → ${profit_500:.2f} profit
   $1000 → ${profit_1000:.2f} profit{gp_text}{liquidity_text}{risk_text}{reason_text}{warning}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=opp.market_id,
@@ -266,7 +266,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 <b>Time span:</b> {movement.time_span_minutes} minutes
 <b>Direction:</b> {movement.direction.upper()}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=movement.market_id,
@@ -303,7 +303,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 
 <b>Momentum:</b> {signal.momentum:+.4f}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=signal.market_id,
@@ -329,7 +329,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 <b>Previous 24h Vol:</b> ${whale.previous_volume:,.0f}
 <b>Current 24h Vol:</b> ${whale.current_volume:,.0f}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=whale.market_id,
@@ -357,7 +357,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 <b>Liquidity:</b> ${market.liquidity:,.0f}
 <b>Prices:</b>{prices_text}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=market.market_id,
@@ -410,7 +410,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 
 <b>24h Volume:</b> ${resolution.volume_24hr:,.0f}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=resolution.market_id,
@@ -446,7 +446,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 
 <b>Market:</b> {alert.market_title[:100]}{'...' if len(alert.market_title) > 100 else ''}
 
-<b>Link:</b> {market_link}"""
+📊 <a href="{market_link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=alert.event_slug or "smart_money",
@@ -494,7 +494,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
   MACD: {macd_text}
   MA Trend: {ma_text}{cross_text}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=signal.market_id,
@@ -527,7 +527,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
 <b>Discrepancy:</b> {validation.max_diff_pct:.1f}%
 <b>Potential Arbitrage:</b> {arbitrage_text}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=validation.market_id,
@@ -626,7 +626,7 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
   2. Pasang ask di {midpoint_cents + opp.recommended_spread:.0f}¢
   3. Spread: ±{opp.recommended_spread:.1f}¢ dari midpoint
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=opp.market_id,
@@ -773,7 +773,7 @@ Yes: {kalshi_yes_cents}¢ / No: {kalshi_no_cents}¢
 
 <b>Profit:</b> {opp.gap_pct:.1f}¢ per $1 | $1000 → ${profit_1000:.2f}{deviation_text}{reason_text}
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=f"multi_{opp.event_slug}",
@@ -826,8 +826,8 @@ Yes: {price_b_cents}¢
 <b>Estimated profit:</b> {dep.estimated_profit_pct:.1f}%{reason_text}
 
 <b>Links:</b>
-• {link_a}
-• {link_b}"""
+• <a href="{link_a}">📊 Market A</a>
+• <a href="{link_b}">📊 Market B</a>"""
 
         return AlertMessage(
             market_id=f"dep_{dep.market_a_id}_{dep.market_b_id}",
@@ -891,7 +891,7 @@ Yes: {price_b_cents}¢
 
 💡 <i>{REASON_EXPLANATIONS[OpportunityReason.SETTLEMENT_LAG]}</i>
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=opp.market_id,
@@ -968,7 +968,7 @@ Yes: {price_b_cents}¢
   $500 → ${profit_500:.2f} profit
   $1000 → ${profit_1000:.2f} profit
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=opp.market_id,
@@ -1044,7 +1044,7 @@ Yes: {price_b_cents}¢
   $500 → ${profit_500:.2f} profit
   $1000 → ${profit_1000:.2f} profit
 
-<b>Link:</b> {link}"""
+📊 <a href="{link}">View on Polymarket</a>"""
 
         return AlertMessage(
             market_id=f"esports_{opp.market_id}",
