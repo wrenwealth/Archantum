@@ -27,6 +27,7 @@ from archantum.analysis.dependency import DependencyAnalyzer
 from archantum.analysis.speed_tracker import SpeedTracker
 from archantum.analysis.settlement import SettlementLagDetector
 from archantum.analysis.certain_outcome import CertainOutcomeDetector
+from archantum.analysis.esports import EsportsArbitrageAnalyzer
 from archantum.analysis.arbitrage import (
     calculate_guaranteed_profit,
     classify_opportunity_reason,
@@ -97,6 +98,9 @@ class PollingEngine:
             CertainOutcomeDetector(self.db) if settings.certain_outcome_configured else None
         )
 
+        # Esports arbitrage scanner
+        self.esports_analyzer = EsportsArbitrageAnalyzer() if settings.esports_enabled else None
+
         # Global alert dedup: (market_id, alert_type) -> last sent timestamp
         self._alert_cooldowns: dict[tuple[str, str], datetime] = {}
         self._alert_cooldown_hours = 1.0  # Don't re-alert same market+type within 1 hour
@@ -108,6 +112,7 @@ class PollingEngine:
         self._cross_platform_poll_count = 0  # Track polls for cross-platform arbitrage
         self._advanced_arb_poll_count = 0  # Track polls for multi-outcome + dependency
         self._certain_outcome_poll_count = 0  # Track polls for certain outcome detection
+        self._esports_poll_count = 0  # Track polls for esports scanner
 
     async def init(self):
         """Initialize the engine."""
@@ -187,6 +192,7 @@ class PollingEngine:
             "arb_enriched": 0,
             "settlement_lag_opps": 0,
             "certain_outcome_opps": 0,
+            "esports_opps": 0,
             "alerts_sent": 0,
             "data_source": "unknown",
         }
@@ -497,6 +503,20 @@ class PollingEngine:
                     except Exception as e:
                         console.print(f"[yellow]Certain outcome error: {e}[/yellow]")
 
+            # 14. Esports arbitrage scanner
+            esports_opps = []
+            if self.esports_analyzer:
+                self._esports_poll_count += 1
+                if self._esports_poll_count >= settings.esports_poll_frequency:
+                    self._esports_poll_count = 0
+                    try:
+                        esports_opps = self.esports_analyzer.analyze(markets, all_prices)
+                        results["esports_opps"] = len(esports_opps)
+                        if esports_opps:
+                            console.print(f"[bold green]Found {len(esports_opps)} esports opportunities![/bold green]")
+                    except Exception as e:
+                        console.print(f"[yellow]Esports scanner error: {e}[/yellow]")
+
             # Send alerts (with 1h dedup cooldown per market+type)
             for opp in arbitrage_opps:
                 if not self._should_send_alert(opp.market_id, "arbitrage"):
@@ -638,6 +658,16 @@ class PollingEngine:
                 alert = self.alerter.format_certain_outcome_alert(co_opp)
                 await self.alerter.send_alert(alert)
                 self._mark_alert_sent(co_opp.market_id, "certain_outcome")
+                results["alerts_sent"] += 1
+
+            # Send esports alerts
+            for es_opp in esports_opps:
+                es_mid = f"esports_{es_opp.market_id}"
+                if not self._should_send_alert(es_mid, "esports"):
+                    continue
+                alert = self.alerter.format_esports_alert(es_opp)
+                await self.alerter.send_alert(alert)
+                self._mark_alert_sent(es_mid, "esports")
                 results["alerts_sent"] += 1
 
             # Speed tracking: check which opportunities are still available
@@ -810,6 +840,10 @@ class PollingEngine:
             console.print(f"[dim]Certain Outcome Detection: Enabled (AI-verified, every 5 polls)[/dim]")
         else:
             console.print(f"[dim]Certain Outcome Detection: Disabled (no API key)[/dim]")
+        if settings.esports_enabled:
+            console.print(f"[dim]Esports Scanner: Enabled (every {settings.esports_poll_frequency} polls)[/dim]")
+        else:
+            console.print(f"[dim]Esports Scanner: Disabled[/dim]")
         console.print()
 
         while self.running:
@@ -839,6 +873,7 @@ class PollingEngine:
                 console.print(f"  Arb enriched (liquidity): {results['arb_enriched']}")
                 console.print(f"  Settlement lag opps: {results['settlement_lag_opps']}")
                 console.print(f"  Certain outcome opps: {results['certain_outcome_opps']}")
+                console.print(f"  Esports opps: {results['esports_opps']}")
                 console.print(f"  Alerts sent: {results['alerts_sent']}")
 
                 console.print(f"\n[dim]Sleeping for {settings.poll_interval}s...[/dim]\n")

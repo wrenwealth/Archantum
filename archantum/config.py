@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     certain_outcome_cache_hours: float = Field(default=6.0, description="AI verification cache TTL in hours")
     certain_outcome_max_ai_calls_per_poll: int = Field(default=5, description="Max AI calls per polling cycle")
 
+    # Esports arbitrage scanner
+    esports_enabled: bool = Field(default=True, description="Enable esports arbitrage scanner")
+    esports_poll_frequency: int = Field(default=2, description="Run esports scan every N polls")
+    esports_min_edge_pct: float = Field(default=1.0, description="Min edge percentage to alert")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

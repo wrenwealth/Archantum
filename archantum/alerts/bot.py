@@ -19,6 +19,7 @@ from archantum.db import Database
 from archantum.api import GammaClient
 from archantum.analysis.historical import HistoricalAnalyzer
 from archantum.analysis.smartmoney import SmartMoneyTracker
+from archantum.analysis.esports import EsportsArbitrageAnalyzer
 
 
 console = Console()
@@ -80,6 +81,9 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("syncwallets", self.cmd_syncwallets))
         self.application.add_handler(CommandHandler("clearwallets", self.cmd_clearwallets))
 
+        # Esports scanner
+        self.application.add_handler(CommandHandler("esports", self.cmd_esports))
+
         # Utility commands
         self.application.add_handler(CommandHandler("getid", self.cmd_getid))
 
@@ -103,6 +107,7 @@ class TelegramBot:
             BotCommand("smartmoney", "Top smart wallets"),
             BotCommand("wallet", "Wallet details"),
             BotCommand("accuracy", "Signal accuracy stats"),
+            BotCommand("esports", "Esports markets & arb scan"),
             BotCommand("stats", "Alert statistics"),
             BotCommand("status", "Bot status"),
             BotCommand("help", "Show all commands"),
@@ -174,6 +179,9 @@ Use /help to see all available commands."""
 /history &lt;market_id&gt; - Price history &amp; stats
 /chart &lt;market_id&gt; - Mini price chart
 /accuracy - Signal accuracy stats
+
+<b>Esports:</b>
+/esports - Esports markets &amp; arbitrage scan
 
 <b>Smart Money:</b>
 /smartmoney - Top profitable wallets
@@ -803,6 +811,87 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error fetching accuracy: {e}")
+
+    # Esports command
+    async def cmd_esports(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /esports command - show esports markets and run arb scan."""
+        await update.message.reply_text("Scanning esports markets...")
+
+        try:
+            analyzer = EsportsArbitrageAnalyzer()
+
+            async with GammaClient() as client:
+                markets = await client.get_top_markets()
+
+            esports_markets = analyzer.discover_esports_markets(markets)
+
+            if not esports_markets:
+                await update.message.reply_text(
+                    "🎮 <b>Esports Scanner</b>\n\n"
+                    "No active esports markets found on Polymarket.\n\n"
+                    "<i>The scanner monitors for Valorant, Counter-Strike, "
+                    "and other esports markets. Markets will appear here "
+                    "when they become active.</i>",
+                    parse_mode="HTML",
+                )
+                return
+
+            # Show discovered markets
+            text = f"🎮 <b>Esports Markets ({len(esports_markets)} found)</b>\n\n"
+            for i, info in enumerate(esports_markets[:20], 1):
+                game_label = {
+                    "valorant": "VAL",
+                    "counter_strike": "CS",
+                    "unknown": "ESP",
+                }.get(info.game.value, "ESP")
+                map_tag = " [MAP]" if info.is_map_market else ""
+                text += (
+                    f"{i}. [{game_label}]{map_tag} {info.question[:55]}"
+                    f"{'...' if len(info.question) > 55 else ''}\n"
+                    f"   <code>{info.market_id}</code>\n"
+                )
+
+            # Run analysis if we have markets
+            from archantum.api import CLOBClient
+            from archantum.data import DataSourceManager
+
+            # Fetch prices for esports markets (up to 20)
+            from archantum.api.clob import PriceData
+
+            prices: dict[str, PriceData] = {}
+            market_subset = [info.market for info in esports_markets[:20]]
+
+            async with CLOBClient() as clob:
+                for market in market_subset:
+                    try:
+                        pd = await clob.get_price_for_market(
+                            yes_token_id=market.yes_token_id,
+                            no_token_id=market.no_token_id,
+                            market_id=market.id,
+                        )
+                        prices[market.id] = pd
+                    except Exception:
+                        pass
+
+            if prices:
+                opps = analyzer.analyze(markets, prices)
+                if opps:
+                    text += f"\n<b>Opportunities ({len(opps)}):</b>\n"
+                    for opp in opps[:10]:
+                        text += (
+                            f"\n🔥 <b>{opp.detection_type.value.replace('_', ' ').upper()}</b>\n"
+                            f"   {opp.description}\n"
+                            f"   Edge: {opp.edge_pct:.1f}%\n"
+                        )
+                else:
+                    text += "\n<i>No arbitrage opportunities detected.</i>"
+            else:
+                text += "\n<i>Could not fetch prices for analysis.</i>"
+
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        except Exception as e:
+            await update.message.reply_text(f"Error running esports scan: {e}")
 
     # Smart money commands
     async def cmd_smartmoney(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

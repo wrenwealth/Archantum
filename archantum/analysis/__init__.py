@@ -26,6 +26,7 @@ from .dependency import DependencyAnalyzer, DependencyArbitrage, DependencyType
 from .speed_tracker import SpeedTracker
 from .settlement import SettlementLagDetector, SettlementLagOpportunity
 from .certain_outcome import CertainOutcomeDetector, CertainOutcomeOpportunity, CertainOutcomeTier
+from .esports import EsportsArbitrageAnalyzer, EsportsOpportunity, EsportsTier, EsportsGame
 
 __all__ = [
     "ArbitrageAnalyzer",
@@ -73,4 +74,8 @@ __all__ = [
     "CertainOutcomeDetector",
     "CertainOutcomeOpportunity",
     "CertainOutcomeTier",
+    "EsportsArbitrageAnalyzer",
+    "EsportsOpportunity",
+    "EsportsTier",
+    "EsportsGame",
 ]

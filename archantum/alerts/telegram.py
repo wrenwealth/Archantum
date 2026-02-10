@@ -32,6 +32,7 @@ from archantum.analysis.multi_outcome import MultiOutcomeArbitrage, MultiOutcome
 from archantum.analysis.dependency import DependencyArbitrage
 from archantum.analysis.settlement import SettlementLagOpportunity
 from archantum.analysis.certain_outcome import CertainOutcomeOpportunity, CertainOutcomeTier
+from archantum.analysis.esports import EsportsOpportunity, EsportsGame, EsportsDetectionType, EsportsTier
 from archantum.data.validator import ValidationResult
 
 
@@ -972,6 +973,82 @@ Yes: {price_b_cents}¢
         return AlertMessage(
             market_id=opp.market_id,
             alert_type="certain_outcome",
+            message=message,
+            details=opp.to_dict(),
+        )
+
+    def format_esports_alert(self, opp: EsportsOpportunity) -> AlertMessage:
+        """Format an esports arbitrage opportunity as an alert."""
+        # Game emoji
+        game_emojis = {
+            EsportsGame.VALORANT: "🎯",
+            EsportsGame.COUNTER_STRIKE: "💣",
+            EsportsGame.UNKNOWN: "🎮",
+        }
+        game_emoji = game_emojis.get(opp.game, "🎮")
+
+        game_labels = {
+            EsportsGame.VALORANT: "Valorant",
+            EsportsGame.COUNTER_STRIKE: "Counter-Strike",
+            EsportsGame.UNKNOWN: "Esports",
+        }
+        game_label = game_labels.get(opp.game, "Esports")
+
+        # Tier formatting
+        if opp.tier == EsportsTier.ALPHA:
+            tier_emoji = "🚨🚨🚨"
+            tier_label = "ALPHA"
+        elif opp.tier == EsportsTier.HIGH_VALUE:
+            tier_emoji = "🔥🔥"
+            tier_label = "HIGH VALUE"
+        else:
+            tier_emoji = "🔥"
+            tier_label = "STANDARD"
+
+        # Detection type label
+        detection_labels = {
+            EsportsDetectionType.MATCH_WINNER: "MATCH WINNER",
+            EsportsDetectionType.TOURNAMENT_WINNER: "TOURNAMENT",
+            EsportsDetectionType.MAP_VS_MATCH: "MAP vs MATCH",
+        }
+        detection_label = detection_labels.get(opp.detection_type, "ESPORTS")
+
+        # Profit estimates
+        profit_100 = opp.calculate_profit(100)
+        profit_500 = opp.calculate_profit(500)
+        profit_1000 = opp.calculate_profit(1000)
+
+        # Tournament/teams info
+        context_text = ""
+        if opp.tournament:
+            context_text += f"\n<b>Tournament:</b> {opp.tournament}"
+        if opp.teams:
+            context_text += f"\n<b>Teams:</b> {', '.join(opp.teams)}"
+
+        # Multi-outcome info
+        multi_text = ""
+        if opp.detection_type == EsportsDetectionType.TOURNAMENT_WINNER and opp.outcome_count > 0:
+            multi_text = f"\n<b>Outcomes:</b> {opp.outcome_count} | <b>Total probability:</b> {opp.total_probability*100:.1f}%"
+
+        link = opp.polymarket_url or "N/A"
+
+        message = f"""{game_emoji} {tier_emoji} <b>ESPORTS {tier_label} — {detection_label}</b>
+
+<b>Game:</b> {game_label}
+<b>Market:</b> {opp.question[:100]}{'...' if len(opp.question) > 100 else ''}
+<b>Edge:</b> {opp.edge_pct:.1f}%
+<b>Detail:</b> {opp.description}{context_text}{multi_text}
+
+<b>Estimated Returns:</b>
+  $100 → ${profit_100:.2f} profit
+  $500 → ${profit_500:.2f} profit
+  $1000 → ${profit_1000:.2f} profit
+
+<b>Link:</b> {link}"""
+
+        return AlertMessage(
+            market_id=f"esports_{opp.market_id}",
+            alert_type="esports",
             message=message,
             details=opp.to_dict(),
         )
