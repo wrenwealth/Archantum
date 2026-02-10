@@ -896,6 +896,27 @@ class Database:
             )
             return list(result.scalars().all())
 
+    async def delete_smart_wallet(self, wallet_address: str) -> bool:
+        """Delete a smart wallet and its trades.
+
+        Returns True if wallet existed, False if not found.
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(SmartWallet).where(SmartWallet.wallet_address == wallet_address)
+            )
+            wallet = result.scalar_one_or_none()
+            if not wallet:
+                return False
+
+            # Delete trades first (FK constraint)
+            await session.execute(
+                delete(SmartTrade).where(SmartTrade.wallet_id == wallet.id)
+            )
+            await session.delete(wallet)
+            await session.commit()
+            return True
+
     async def clear_smart_wallets(self) -> int:
         """Clear all smart wallets and their trades.
 

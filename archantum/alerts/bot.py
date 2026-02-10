@@ -80,6 +80,8 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("wallet", self.cmd_wallet))
         self.application.add_handler(CommandHandler("syncwallets", self.cmd_syncwallets))
         self.application.add_handler(CommandHandler("clearwallets", self.cmd_clearwallets))
+        self.application.add_handler(CommandHandler("addwallet", self.cmd_addwallet))
+        self.application.add_handler(CommandHandler("removewallet", self.cmd_removewallet))
 
         # Esports scanner
         self.application.add_handler(CommandHandler("esports", self.cmd_esports))
@@ -106,6 +108,8 @@ class TelegramBot:
             BotCommand("chart", "Price chart"),
             BotCommand("smartmoney", "Top smart wallets"),
             BotCommand("wallet", "Wallet details"),
+            BotCommand("addwallet", "Track a wallet by address"),
+            BotCommand("removewallet", "Stop tracking a wallet"),
             BotCommand("accuracy", "Signal accuracy stats"),
             BotCommand("esports", "Esports markets & arb scan"),
             BotCommand("stats", "Alert statistics"),
@@ -186,6 +190,8 @@ Use /help to see all available commands."""
 <b>Smart Money:</b>
 /smartmoney - Top profitable wallets
 /wallet &lt;address&gt; - Wallet details &amp; trades
+/addwallet &lt;address&gt; - Track a wallet
+/removewallet &lt;address&gt; - Stop tracking
 /syncwallets - Sync leaderboard wallets
 
 <b>Stats:</b>
@@ -1017,3 +1023,70 @@ Use /help to see all available commands."""
             )
         except Exception as e:
             await update.message.reply_text(f"Error clearing wallets: {e}")
+
+    async def cmd_addwallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /addwallet command - add a wallet to track."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /addwallet <address>\n"
+                "Example: /addwallet 0x1234...abcd"
+            )
+            return
+
+        address = context.args[0].lower()
+
+        # Validate Ethereum address format
+        if not address.startswith("0x") or len(address) != 42:
+            await update.message.reply_text(
+                "Invalid address. Must be a 42-character Ethereum address starting with 0x."
+            )
+            return
+
+        try:
+            await update.message.reply_text(f"Adding wallet <code>{address[:10]}...{address[-4:]}</code>...", parse_mode="HTML")
+
+            # Upsert wallet (marks as tracked)
+            await self.db.upsert_smart_wallet(wallet_address=address)
+
+            # Fetch initial trades
+            trade_count = await self.smart_money.fetch_wallet_trades(address)
+
+            await update.message.reply_text(
+                f"✅ Wallet added to tracking:\n"
+                f"<code>{address}</code>\n\n"
+                f"Fetched <b>{trade_count}</b> recent trades.\n"
+                f"Use /wallet {address} to view details.",
+                parse_mode="HTML",
+            )
+
+        except Exception as e:
+            await update.message.reply_text(f"Error adding wallet: {e}")
+
+    async def cmd_removewallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /removewallet command - stop tracking a wallet."""
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /removewallet <address>\n"
+                "Get addresses from /smartmoney"
+            )
+            return
+
+        address = context.args[0].lower()
+
+        try:
+            removed = await self.db.delete_smart_wallet(address)
+
+            if removed:
+                await update.message.reply_text(
+                    f"🗑 Wallet removed from tracking:\n"
+                    f"<code>{address}</code>",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    f"Wallet not found: <code>{address[:10]}...</code>",
+                    parse_mode="HTML",
+                )
+
+        except Exception as e:
+            await update.message.reply_text(f"Error removing wallet: {e}")
