@@ -1162,9 +1162,14 @@ Use /help to see all available commands."""
             # Progress callback that edits the status message in-place
             async def _progress(fetched: int, page: int) -> None:
                 try:
-                    await status_msg.edit_text(
-                        f"Fetching trades ({period_label})... {fetched} trades loaded (page {page})"
-                    )
+                    if page == -1:
+                        await status_msg.edit_text(
+                            f"Fetching redemptions ({period_label})... {fetched} trades loaded"
+                        )
+                    else:
+                        await status_msg.edit_text(
+                            f"Fetching trades ({period_label})... {fetched} trades loaded (page {page})"
+                        )
                 except TelegramError:
                     pass  # message unchanged or rate-limited
 

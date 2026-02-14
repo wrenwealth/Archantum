@@ -6,7 +6,7 @@ import json
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from rich.console import Console
@@ -95,11 +95,15 @@ class PositionState:
     first_buy_at: datetime | None = None
     last_action_at: datetime | None = None
 
+    settled_as_loss: bool = False
+
     @property
     def is_closed(self) -> bool:
-        """Position is closed if >= 95% of shares sold."""
+        """Position is closed if >= 95% of shares sold or settled as loss."""
         if self.total_bought == 0:
             return False
+        if self.settled_as_loss:
+            return True
         return self.total_sold >= self.total_bought * 0.95
 
     @property
@@ -107,6 +111,9 @@ class PositionState:
         """Realized P&L for closed positions."""
         if self.total_bought == 0:
             return 0.0
+        if self.settled_as_loss:
+            # Shares expired worthless — lost the entire buy cost
+            return -self.total_buy_cost
         avg_buy = self.total_buy_cost / self.total_bought
         sold_shares = min(self.total_sold, self.total_bought)
         return (self.total_sell_proceeds - (sold_shares * avg_buy)) if sold_shares > 0 else 0.0
@@ -202,7 +209,10 @@ class WalletStrategyAnalyzer:
         progress_callback: Any | None = None,
         since_timestamp: int | None = None,
     ) -> int:
-        """Fetch trades via paginated API calls with batch DB saves.
+        """Fetch trades and redemptions via paginated API calls with batch DB saves.
+
+        Fetches both TRADE and REDEEM activities. REDEEMs are converted to
+        synthetic SELL trades at $1.00 per share (settlement wins).
 
         Args:
             wallet_address: Wallet to fetch trades for.
@@ -218,11 +228,12 @@ class WalletStrategyAnalyzer:
             return 0
 
         new_count = 0
-        offset = 0
-        page_size = 500
         total_fetched = 0
 
         async with DataAPIClient() as client:
+            # Phase 1: Fetch TRADE activities
+            offset = 0
+            page_size = 500
             for page_num in range(1, max_pages + 1):
                 try:
                     activities = await client.get_wallet_activity(
@@ -241,14 +252,12 @@ class WalletStrategyAnalyzer:
 
                 total_fetched += len(activities)
 
-                # Report progress
                 if progress_callback:
                     try:
                         await progress_callback(total_fetched, page_num)
                     except Exception:
                         pass
 
-                # Convert to dicts for batch save
                 trades_data = []
                 for act in activities:
                     try:
@@ -267,13 +276,79 @@ class WalletStrategyAnalyzer:
                     except Exception:
                         pass
 
-                # Batch save this page
                 page_new = await self.db.save_smart_trades_batch(wallet.id, trades_data)
                 new_count += page_new
 
                 if len(activities) < page_size:
                     break
                 offset += page_size
+
+            # Phase 2: Fetch REDEEM activities (settlement wins)
+            # First build a map of condition_id → outcome from buy trades
+            all_trades = await self.db.get_all_wallet_trades(wallet_address)
+            buy_outcome_map: dict[str, str] = {}
+            buy_title_map: dict[str, str] = {}
+            buy_slug_map: dict[str, str | None] = {}
+            for t in all_trades:
+                if t.side == "BUY":
+                    buy_outcome_map[t.condition_id] = t.outcome
+                    buy_title_map[t.condition_id] = t.market_title
+                    buy_slug_map[t.condition_id] = t.event_slug
+
+            if progress_callback:
+                try:
+                    await progress_callback(total_fetched, -1)  # signal: fetching redemptions
+                except Exception:
+                    pass
+
+            offset = 0
+            redeem_count = 0
+            for _ in range(max_pages):
+                try:
+                    redeems = await client.get_wallet_activity(
+                        wallet=wallet_address,
+                        limit=page_size,
+                        offset=offset,
+                        activity_type="REDEEM",
+                        start_time=since_timestamp,
+                    )
+                except Exception:
+                    break
+
+                if not redeems:
+                    break
+
+                redeem_data = []
+                for act in redeems:
+                    try:
+                        cid = act.condition_id
+                        outcome = buy_outcome_map.get(cid, f"outcome_{act.outcome_index}")
+                        # REDEEM = settlement win → synthetic SELL at $1.00
+                        redeem_data.append({
+                            "transaction_hash": act.transaction_hash,
+                            "condition_id": cid,
+                            "market_title": act.title or buy_title_map.get(cid, ""),
+                            "event_slug": act.event_slug or buy_slug_map.get(cid),
+                            "side": "SELL",
+                            "outcome": outcome,
+                            "size": act.size,
+                            "usdc_size": act.size,  # redeemed at $1.00 per share
+                            "price": 1.0,
+                            "timestamp": datetime.utcfromtimestamp(act.timestamp),
+                        })
+                        redeem_count += 1
+                    except Exception:
+                        pass
+
+                page_new = await self.db.save_smart_trades_batch(wallet.id, redeem_data)
+                new_count += page_new
+
+                if len(redeems) < page_size:
+                    break
+                offset += page_size
+
+            if redeem_count > 0:
+                console.print(f"[green]Fetched {redeem_count} redemptions (settlement wins)[/green]")
 
         return new_count
 
@@ -330,7 +405,11 @@ class WalletStrategyAnalyzer:
 
     @staticmethod
     def _build_positions(trades: list[SmartTrade]) -> list[PositionState]:
-        """Group trades into positions by (condition_id, outcome)."""
+        """Group trades into positions by (condition_id, outcome).
+
+        Detects settlement losses: positions with only buys, no sells/redeems,
+        and last activity > 24h ago are marked as expired worthless.
+        """
         pos_map: dict[tuple[str, str], PositionState] = {}
 
         for t in trades:
@@ -355,6 +434,20 @@ class WalletStrategyAnalyzer:
                 pos.sell_prices.append(t.price)
 
             pos.last_action_at = t.timestamp
+
+        # Detect settlement losses: buy-only positions older than 24h
+        # (for short-duration markets like 5m/15m, if no REDEEM after 24h = lost)
+        now = datetime.utcnow()
+        settlement_cutoff = now - timedelta(hours=24)
+
+        for pos in pos_map.values():
+            if (
+                pos.total_bought > 0
+                and pos.total_sold == 0
+                and pos.last_action_at
+                and pos.last_action_at < settlement_cutoff
+            ):
+                pos.settled_as_loss = True
 
         return list(pos_map.values())
 
