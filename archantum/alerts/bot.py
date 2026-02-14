@@ -1127,7 +1127,7 @@ Use /help to see all available commands."""
             )
             return
 
-        await update.message.reply_text("Fetching trade history & analyzing... (this may take a moment)")
+        status_msg = await update.message.reply_text("Fetching trade history...")
 
         try:
             # Ensure wallet exists in DB
@@ -1135,8 +1135,19 @@ Use /help to see all available commands."""
             if not wallet:
                 wallet = await self.db.upsert_smart_wallet(wallet_address=address)
 
-            # Fetch all trades
-            new_trades = await self.wallet_analyzer.fetch_all_trades(address)
+            # Progress callback that edits the status message in-place
+            async def _progress(fetched: int, page: int) -> None:
+                try:
+                    await status_msg.edit_text(f"Fetching trades... {fetched} trades loaded (page {page})")
+                except TelegramError:
+                    pass  # message unchanged or rate-limited
+
+            # Fetch trades with progress
+            new_trades = await self.wallet_analyzer.fetch_all_trades(
+                address, progress_callback=_progress,
+            )
+
+            await status_msg.edit_text("Analyzing strategy...")
 
             # Run analysis
             result = await self.wallet_analyzer.analyze(address)

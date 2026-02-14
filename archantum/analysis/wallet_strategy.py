@@ -195,8 +195,22 @@ class WalletStrategyAnalyzer:
     def __init__(self, db: Database):
         self.db = db
 
-    async def fetch_all_trades(self, wallet_address: str) -> int:
-        """Fetch all trades via paginated API calls. Returns count of new trades."""
+    async def fetch_all_trades(
+        self,
+        wallet_address: str,
+        max_pages: int = 10,
+        progress_callback: Any | None = None,
+    ) -> int:
+        """Fetch trades via paginated API calls with batch DB saves.
+
+        Args:
+            wallet_address: Wallet to fetch trades for.
+            max_pages: Max pages to fetch (500 trades/page). Default 10 = 5000 trades.
+            progress_callback: Optional async callable(fetched_so_far, page_num) for progress updates.
+
+        Returns:
+            Count of new trades saved.
+        """
         wallet = await self.db.get_smart_wallet(wallet_address)
         if not wallet:
             return 0
@@ -204,9 +218,10 @@ class WalletStrategyAnalyzer:
         new_count = 0
         offset = 0
         page_size = 500
+        total_fetched = 0
 
         async with DataAPIClient() as client:
-            while True:
+            for page_num in range(1, max_pages + 1):
                 try:
                     activities = await client.get_wallet_activity(
                         wallet=wallet_address,
@@ -221,25 +236,37 @@ class WalletStrategyAnalyzer:
                 if not activities:
                     break
 
-                for act in activities:
+                total_fetched += len(activities)
+
+                # Report progress
+                if progress_callback:
                     try:
-                        result = await self.db.save_smart_trade(
-                            wallet_id=wallet.id,
-                            transaction_hash=act.transaction_hash,
-                            condition_id=act.condition_id,
-                            market_title=act.title or "",
-                            event_slug=act.event_slug,
-                            side=act.side,
-                            outcome=act.outcome or f"outcome_{act.outcome_index}",
-                            size=act.size,
-                            usdc_size=act.usdc_size,
-                            price=act.price,
-                            timestamp=datetime.utcfromtimestamp(act.timestamp),
-                        )
-                        if result:
-                            new_count += 1
+                        await progress_callback(total_fetched, page_num)
                     except Exception:
                         pass
+
+                # Convert to dicts for batch save
+                trades_data = []
+                for act in activities:
+                    try:
+                        trades_data.append({
+                            "transaction_hash": act.transaction_hash,
+                            "condition_id": act.condition_id,
+                            "market_title": act.title or "",
+                            "event_slug": act.event_slug,
+                            "side": act.side,
+                            "outcome": act.outcome or f"outcome_{act.outcome_index}",
+                            "size": act.size,
+                            "usdc_size": act.usdc_size,
+                            "price": act.price,
+                            "timestamp": datetime.utcfromtimestamp(act.timestamp),
+                        })
+                    except Exception:
+                        pass
+
+                # Batch save this page
+                page_new = await self.db.save_smart_trades_batch(wallet.id, trades_data)
+                new_count += page_new
 
                 if len(activities) < page_size:
                     break

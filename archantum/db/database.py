@@ -833,6 +833,53 @@ class Database:
 
             return trade
 
+    async def save_smart_trades_batch(
+        self,
+        wallet_id: int,
+        trades_data: list[dict],
+    ) -> int:
+        """Batch-save trades for a wallet. Returns count of new trades inserted.
+
+        Fetches existing tx hashes in one query, filters dupes in-memory,
+        inserts all new trades in a single commit, and updates wallet stats once.
+        """
+        if not trades_data:
+            return 0
+
+        async with self.async_session() as session:
+            # Fetch all existing tx hashes for this wallet in one query
+            result = await session.execute(
+                select(SmartTrade.transaction_hash)
+                .where(SmartTrade.wallet_id == wallet_id)
+            )
+            existing_hashes: set[str] = {row[0] for row in result.all()}
+
+            # Filter out duplicates in-memory
+            new_trades = []
+            for td in trades_data:
+                if td["transaction_hash"] not in existing_hashes:
+                    existing_hashes.add(td["transaction_hash"])  # prevent intra-batch dupes
+                    new_trades.append(SmartTrade(wallet_id=wallet_id, **td))
+
+            if not new_trades:
+                return 0
+
+            session.add_all(new_trades)
+
+            # Update wallet last_trade_at and total_trades once
+            wallet_result = await session.execute(
+                select(SmartWallet).where(SmartWallet.id == wallet_id)
+            )
+            wallet = wallet_result.scalar_one_or_none()
+            if wallet:
+                latest_ts = max(t.timestamp for t in new_trades)
+                if wallet.last_trade_at is None or latest_ts > wallet.last_trade_at:
+                    wallet.last_trade_at = latest_ts
+                wallet.total_trades = (wallet.total_trades or 0) + len(new_trades)
+
+            await session.commit()
+            return len(new_trades)
+
     async def get_recent_smart_trades(
         self,
         limit: int = 50,
