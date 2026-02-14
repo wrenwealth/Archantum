@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+
 from telegram import Update, Bot, BotCommand
 from telegram.ext import (
     Application,
@@ -207,7 +209,7 @@ Use /help to see all available commands."""
 /syncwallets - Sync leaderboard wallets
 
 <b>Wallet Strategy:</b>
-/analyze_wallet &lt;address&gt; - Full strategy analysis
+/analyze_wallet &lt;address&gt; [period] - Strategy analysis (e.g. 30d)
 /wallet_trades &lt;address&gt; [count] - Recent trades
 /wallet_positions &lt;address&gt; - Open positions
 /wallet_copy [address] [min_usdc] - Copy trade alerts
@@ -1114,8 +1116,10 @@ Use /help to see all available commands."""
         """Handle /analyze_wallet command — full strategy analysis."""
         if not context.args:
             await update.message.reply_text(
-                "Usage: /analyze_wallet <address>\n"
-                "Example: /analyze_wallet 0x7c3d..."
+                "Usage: /analyze_wallet <address> [period]\n"
+                "Example: /analyze_wallet 0x7c3d...\n"
+                "Example: /analyze_wallet 0x7c3d... 30d\n\n"
+                "Period: 7d, 30d, 90d, etc. (default: all time)"
             )
             return
 
@@ -1127,7 +1131,27 @@ Use /help to see all available commands."""
             )
             return
 
-        status_msg = await update.message.reply_text("Fetching trade history...")
+        # Parse optional date range (e.g. "30d", "7d", "90d")
+        import re
+        from datetime import timedelta
+        since_timestamp = None
+        period_label = "all time"
+        if len(context.args) > 1:
+            match = re.match(r'^(\d+)d$', context.args[1].lower())
+            if match:
+                days = int(match.group(1))
+                since_dt = datetime.utcnow() - timedelta(days=days)
+                since_timestamp = int(since_dt.timestamp())
+                period_label = f"last {days}d"
+            else:
+                await update.message.reply_text(
+                    "Invalid period format. Use e.g. 7d, 30d, 90d"
+                )
+                return
+
+        status_msg = await update.message.reply_text(
+            f"Fetching trade history ({period_label})..."
+        )
 
         try:
             # Ensure wallet exists in DB
@@ -1138,13 +1162,17 @@ Use /help to see all available commands."""
             # Progress callback that edits the status message in-place
             async def _progress(fetched: int, page: int) -> None:
                 try:
-                    await status_msg.edit_text(f"Fetching trades... {fetched} trades loaded (page {page})")
+                    await status_msg.edit_text(
+                        f"Fetching trades ({period_label})... {fetched} trades loaded (page {page})"
+                    )
                 except TelegramError:
                     pass  # message unchanged or rate-limited
 
             # Fetch trades with progress
             new_trades = await self.wallet_analyzer.fetch_all_trades(
-                address, progress_callback=_progress,
+                address,
+                progress_callback=_progress,
+                since_timestamp=since_timestamp,
             )
 
             await status_msg.edit_text("Analyzing strategy...")

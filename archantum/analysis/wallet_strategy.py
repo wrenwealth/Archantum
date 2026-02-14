@@ -198,15 +198,17 @@ class WalletStrategyAnalyzer:
     async def fetch_all_trades(
         self,
         wallet_address: str,
-        max_pages: int = 10,
+        max_pages: int = 50,
         progress_callback: Any | None = None,
+        since_timestamp: int | None = None,
     ) -> int:
         """Fetch trades via paginated API calls with batch DB saves.
 
         Args:
             wallet_address: Wallet to fetch trades for.
-            max_pages: Max pages to fetch (500 trades/page). Default 10 = 5000 trades.
+            max_pages: Max pages to fetch (500 trades/page). Default 50 = 25000 trades.
             progress_callback: Optional async callable(fetched_so_far, page_num) for progress updates.
+            since_timestamp: Optional unix timestamp — only fetch trades after this time.
 
         Returns:
             Count of new trades saved.
@@ -228,6 +230,7 @@ class WalletStrategyAnalyzer:
                         limit=page_size,
                         offset=offset,
                         activity_type="TRADE",
+                        start_time=since_timestamp,
                     )
                 except Exception as e:
                     console.print(f"[yellow]Error fetching trades at offset {offset}: {e}[/yellow]")
