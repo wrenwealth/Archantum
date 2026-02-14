@@ -112,8 +112,9 @@ class PositionState:
         if self.total_bought == 0:
             return 0.0
         if self.settled_as_loss:
-            # Shares expired worthless — lost the entire buy cost
-            return -self.total_buy_cost
+            # Remaining unsold shares expired worthless.
+            # P&L = any sell proceeds received - total cost paid.
+            return self.total_sell_proceeds - self.total_buy_cost
         avg_buy = self.total_buy_cost / self.total_bought
         sold_shares = min(self.total_sold, self.total_bought)
         return (self.total_sell_proceeds - (sold_shares * avg_buy)) if sold_shares > 0 else 0.0
@@ -286,6 +287,26 @@ class WalletStrategyAnalyzer:
             # Phase 2: Fetch REDEEM activities (settlement wins)
             # First build a map of condition_id → outcome from buy trades
             all_trades = await self.db.get_all_wallet_trades(wallet_address)
+
+            # Migrate: remove old-format synthetic REDEEM entries that used
+            # raw tx hashes.  Batched on-chain redemptions share one hash,
+            # so only the first was saved — the rest were silently dropped.
+            # Re-creating them below with per-condition unique hashes fixes
+            # this.
+            from sqlalchemy import delete as sa_delete
+            old_redeem_ids = [
+                t.id for t in all_trades
+                if t.side == "SELL" and t.price == 1.0
+                and "_redeem_" not in t.transaction_hash
+            ]
+            if old_redeem_ids:
+                async with self.db.async_session() as session:
+                    await session.execute(
+                        sa_delete(SmartTrade).where(SmartTrade.id.in_(old_redeem_ids))
+                    )
+                    await session.commit()
+                all_trades = await self.db.get_all_wallet_trades(wallet_address)
+
             buy_outcome_map: dict[str, str] = {}
             buy_title_map: dict[str, str] = {}
             buy_slug_map: dict[str, str | None] = {}
@@ -323,20 +344,28 @@ class WalletStrategyAnalyzer:
                     try:
                         cid = act.condition_id
                         outcome = buy_outcome_map.get(cid, f"outcome_{act.outcome_index}")
-                        # REDEEM = settlement win → synthetic SELL at $1.00
+                        # Use per-condition unique hash: batched on-chain
+                        # redemptions share a single tx hash, which caused
+                        # the old dedup logic to drop all but the first.
+                        #
+                        # Winning side: size > 0, saved as synthetic SELL at $1.
+                        # Losing side:  size = 0, saved as marker (size=0,
+                        #               usdc=0, price=1.0) so _build_positions
+                        #               can detect the settlement loss.
                         redeem_data.append({
-                            "transaction_hash": act.transaction_hash,
+                            "transaction_hash": f"{act.transaction_hash}_redeem_{cid}",
                             "condition_id": cid,
                             "market_title": act.title or buy_title_map.get(cid, ""),
                             "event_slug": act.event_slug or buy_slug_map.get(cid),
                             "side": "SELL",
                             "outcome": outcome,
                             "size": act.size,
-                            "usdc_size": act.size,  # redeemed at $1.00 per share
+                            "usdc_size": act.size,  # $1.00 per share (0 for losses)
                             "price": 1.0,
                             "timestamp": datetime.utcfromtimestamp(act.timestamp),
                         })
-                        redeem_count += 1
+                        if act.size > 0:
+                            redeem_count += 1
                     except Exception:
                         pass
 
@@ -407,8 +436,10 @@ class WalletStrategyAnalyzer:
     def _build_positions(trades: list[SmartTrade]) -> list[PositionState]:
         """Group trades into positions by (condition_id, outcome).
 
-        Detects settlement losses: positions with only buys, no sells/redeems,
-        and last activity > 24h ago are marked as expired worthless.
+        Settlement loss detection:
+        1. Cross-inference: if a REDEEM (sell at $1) exists for one outcome
+           of a condition, the other outcome on the same condition is a loss.
+        2. Time-based: any position not fully sold and inactive > 24 h.
         """
         pos_map: dict[tuple[str, str], PositionState] = {}
 
@@ -435,18 +466,47 @@ class WalletStrategyAnalyzer:
 
             pos.last_action_at = t.timestamp
 
-        # Detect settlement losses: buy-only positions older than 24h
-        # (for short-duration markets like 5m/15m, if no REDEEM after 24h = lost)
+        # --- Detect settlement wins/losses ---
+
+        # Step 1: Infer resolved conditions from redemption data.
+        # REDEEMs are stored as synthetic SELLs at $1.00.  If a position
+        # on condition_id X has a sell at >=0.99, that outcome won.
+        # Any OTHER outcome on the same condition_id is a loss.
+        redeemed_conditions: dict[str, str] = {}  # condition_id → winning outcome
+        for pos in pos_map.values():
+            if pos.total_sold > 0 and any(p >= 0.99 for p in pos.sell_prices):
+                redeemed_conditions[pos.condition_id] = pos.outcome
+
+        # Step 2: Mark settlement losses.
         now = datetime.utcnow()
         settlement_cutoff = now - timedelta(hours=24)
 
         for pos in pos_map.values():
-            if (
-                pos.total_bought > 0
-                and pos.total_sold == 0
-                and pos.last_action_at
-                and pos.last_action_at < settlement_cutoff
-            ):
+            if pos.total_bought == 0:
+                continue
+            # Already fully sold/redeemed — not a loss
+            if pos.total_sold >= pos.total_bought * 0.95:
+                continue
+
+            # Check 1: Zero-value REDEEM marker — the API returned a
+            # REDEEM with size=0 for this position, meaning shares
+            # expired worthless.  Detected by: sell_prices contains 1.0
+            # but total_sold is 0.
+            if pos.total_sold == 0 and any(p >= 0.99 for p in pos.sell_prices):
+                pos.settled_as_loss = True
+                continue
+
+            # Check 2: Condition resolved via REDEEM and this side lost
+            if pos.condition_id in redeemed_conditions:
+                winning_outcome = redeemed_conditions[pos.condition_id]
+                if pos.outcome != winning_outcome:
+                    pos.settled_as_loss = True
+                    continue
+
+            # Check 3: Time-based heuristic — position not fully closed
+            # and no activity for >24 h (covers both zero-sell and
+            # partial-sell cases for resolved markets).
+            if pos.last_action_at and pos.last_action_at < settlement_cutoff:
                 pos.settled_as_loss = True
 
         return list(pos_map.values())
@@ -473,10 +533,15 @@ class WalletStrategyAnalyzer:
         result.loss_count = len(closed) - result.win_count
         result.open_positions = sum(1 for p in positions if not p.is_closed)
         result.win_rate = (result.win_count / len(closed) * 100) if closed else 0.0
-        result.realized_pnl = sum(p.realized_pnl for p in closed)
 
-        total_cost = sum(p.total_buy_cost for p in closed)
-        result.roi_pct = (result.realized_pnl / total_cost * 100) if total_cost > 0 else 0.0
+        # PnL: use (total proceeds − total cost) across all trades.
+        # This matches Polymarket's official PnL methodology and avoids
+        # compounding settlement-detection heuristic errors.
+        total_sell_proceeds = sum(t.usdc_size for t in trades if t.side == "SELL")
+        total_buy_costs = sum(t.usdc_size for t in trades if t.side == "BUY")
+        result.realized_pnl = total_sell_proceeds - total_buy_costs
+
+        result.roi_pct = (result.realized_pnl / total_buy_costs * 100) if total_buy_costs > 0 else 0.0
 
     @staticmethod
     def _compute_entry_analysis(
