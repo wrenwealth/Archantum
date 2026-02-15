@@ -104,6 +104,9 @@ class PaperTradingEngine:
         # Telegram skip notification: only send once per window to avoid spam
         self._last_skip_window: int = 0
 
+        # Track traded windows to prevent duplicate trades (robust dedup)
+        self._traded_windows: set[int] = set()
+
     # ── Market Discovery ────────────────────────────────────────────
 
     async def _discover_btc_15m_market(self, window_ts: int) -> GammaMarket | None:
@@ -394,6 +397,7 @@ class PaperTradingEngine:
         await self.alerter.send_raw_message(msg)
 
         window.traded = True
+        self._traded_windows.add(window.window_ts)  # Robust dedup
         console.print(f"[bold green]Paper trade #{trade.id} placed: {signal.direction.value} (gap ${signal.gap_usd:.0f})[/bold green]")
         return trade.id
 
@@ -699,10 +703,14 @@ class PaperTradingEngine:
                 f"| market: {market_id or 'none'}[/dim]"
             )
 
+            # Cleanup old traded windows (keep last 1 hour = 4 windows)
+            cutoff_ts = window_ts - 3600
+            self._traded_windows = {ts for ts in self._traded_windows if ts > cutoff_ts}
+
         window = self._current_window
 
-        # Already traded this window
-        if window.traded:
+        # Already traded this window (check both flags for robustness)
+        if window.traded or window.window_ts in self._traded_windows:
             return
 
         # Calculate minutes remaining
