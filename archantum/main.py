@@ -1045,7 +1045,8 @@ class PollingEngine:
         # Catch-up analysis after offline gap
         try:
             catchup_results = await self.catch_up()
-            await self._send_startup_notification(catchup_results)
+            # Disabled: startup notification is noisy during development
+            # await self._send_startup_notification(catchup_results)
         except Exception as e:
             console.print(f"[red]Catch-up error (non-fatal): {e}[/red]")
 
