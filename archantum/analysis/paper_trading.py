@@ -776,8 +776,8 @@ class PaperTradingEngine:
                 try:
                     msg = self._format_skip_alert(signal)
                     await self.alerter.send_raw_message(msg)
-                except Exception:
-                    pass
+                except Exception as e:
+                    console.print(f"[red]Paper trading: skip alert error: {e}[/red]")
             return
 
         # Place trade
