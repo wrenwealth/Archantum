@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     wallet_analysis_poll_frequency: int = Field(default=10, description="Run wallet analysis every N polls")
     copy_trade_min_usdc: float = Field(default=100.0, description="Default min USDC for copy trade alerts")
 
+    # Paper trading
+    paper_trading_enabled: bool = Field(default=False, description="Enable paper trading engine")
+    paper_trading_poll_interval: int = Field(default=10, description="Paper trading tick interval in seconds")
+    paper_trading_trade_size: float = Field(default=100.0, description="Paper trade size in USD")
+    paper_trading_entry_price: float = Field(default=0.90, description="Simulated entry price on Polymarket")
+    paper_trading_max_daily_losses: int = Field(default=5, description="Max total losses per day before stopping")
+    paper_trading_max_consecutive_losses: int = Field(default=3, description="Max consecutive losses before stopping")
+
     # Esports arbitrage scanner
     esports_enabled: bool = Field(default=True, description="Enable esports arbitrage scanner")
     esports_poll_frequency: int = Field(default=2, description="Run esports scan every N polls")

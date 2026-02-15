@@ -427,6 +427,37 @@ class SystemState(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PaperTrade(Base):
+    """Paper trading simulated trades."""
+
+    __tablename__ = "paper_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    window_id = Column(String, nullable=False)  # e.g. "1708012800" (unix ts of window start)
+    window_start = Column(DateTime, nullable=False)
+    window_end = Column(DateTime, nullable=False)
+    market_id = Column(String, nullable=True)
+    btc_price_at_open = Column(Float, nullable=False)
+    btc_price_at_entry = Column(Float, nullable=False)
+    btc_price_at_close = Column(Float, nullable=True)
+    gap_usd = Column(Float, nullable=False)
+    direction = Column(String, nullable=False)  # UP or DOWN
+    confidence = Column(String, nullable=False)  # HIGH or MEDIUM
+    entry_price = Column(Float, nullable=False)  # Polymarket entry price (e.g. 0.90)
+    trade_size_usd = Column(Float, nullable=False)
+    minutes_to_resolve = Column(Float, nullable=False)
+    hour_zone = Column(String, nullable=False)  # SAFE, CAUTION, BLACKLIST
+    resolved = Column(Boolean, default=False)
+    resolved_direction = Column(String, nullable=True)  # UP or DOWN
+    win = Column(Boolean, nullable=True)
+    pnl_usd = Column(Float, nullable=True)
+    entry_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+    running_pnl = Column(Float, nullable=True)
+    running_wins = Column(Integer, nullable=True)
+    running_losses = Column(Integer, nullable=True)
+
+
 class SpeedSummary(Base):
     """Weekly speed summary statistics."""
 

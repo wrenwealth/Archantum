@@ -10,7 +10,7 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from archantum.config import settings
-from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade, SystemState, WalletAnalysis, CopyTradeSubscription
+from archantum.db.models import Base, Market, PriceSnapshot, VolumeSnapshot, Alert, Watchlist, Position, AlertOutcome, SmartWallet, SmartTrade, SystemState, WalletAnalysis, CopyTradeSubscription, PaperTrade
 from archantum.api.gamma import GammaMarket
 from archantum.api.clob import PriceData
 
@@ -1148,3 +1148,133 @@ class Database:
                 .where(CopyTradeSubscription.enabled == True)
             )
             return list(result.all())
+
+    # Paper Trade operations
+    async def save_paper_trade(self, trade_data: dict) -> PaperTrade:
+        """Save a new paper trade."""
+        async with self.async_session() as session:
+            trade = PaperTrade(**trade_data)
+            session.add(trade)
+            await session.commit()
+            await session.refresh(trade)
+            return trade
+
+    async def get_pending_paper_trades(self) -> list[PaperTrade]:
+        """Get unresolved paper trades."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(PaperTrade)
+                .where(PaperTrade.resolved == False)
+                .order_by(PaperTrade.entry_at.asc())
+            )
+            return list(result.scalars().all())
+
+    async def resolve_paper_trade(
+        self,
+        trade_id: int,
+        resolved_direction: str,
+        win: bool,
+        pnl_usd: float,
+        btc_price_at_close: float,
+        running_pnl: float | None = None,
+        running_wins: int | None = None,
+        running_losses: int | None = None,
+    ) -> PaperTrade | None:
+        """Resolve a paper trade with outcome."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(PaperTrade).where(PaperTrade.id == trade_id)
+            )
+            trade = result.scalar_one_or_none()
+            if not trade:
+                return None
+
+            trade.resolved = True
+            trade.resolved_direction = resolved_direction
+            trade.win = win
+            trade.pnl_usd = pnl_usd
+            trade.btc_price_at_close = btc_price_at_close
+            trade.resolved_at = datetime.utcnow()
+            if running_pnl is not None:
+                trade.running_pnl = running_pnl
+            if running_wins is not None:
+                trade.running_wins = running_wins
+            if running_losses is not None:
+                trade.running_losses = running_losses
+
+            await session.commit()
+            await session.refresh(trade)
+            return trade
+
+    async def get_paper_trade_stats(self) -> dict[str, Any]:
+        """Get paper trade statistics."""
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        async with self.async_session() as session:
+            # Total resolved trades
+            total_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.resolved == True)
+            )
+            total = total_result.scalar_one() or 0
+
+            # Wins
+            wins_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.win == True)
+            )
+            wins = wins_result.scalar_one() or 0
+
+            losses = total - wins
+            win_rate = (wins / total * 100) if total > 0 else 0.0
+
+            # Total PnL
+            pnl_result = await session.execute(
+                select(func.sum(PaperTrade.pnl_usd))
+                .where(PaperTrade.resolved == True)
+            )
+            total_pnl = pnl_result.scalar_one() or 0.0
+
+            # Today's stats
+            today_total_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.entry_at >= today_start)
+                .where(PaperTrade.resolved == True)
+            )
+            today_total = today_total_result.scalar_one() or 0
+
+            today_wins_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.entry_at >= today_start)
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.win == True)
+            )
+            today_wins = today_wins_result.scalar_one() or 0
+
+            today_pnl_result = await session.execute(
+                select(func.sum(PaperTrade.pnl_usd))
+                .where(PaperTrade.entry_at >= today_start)
+                .where(PaperTrade.resolved == True)
+            )
+            today_pnl = today_pnl_result.scalar_one() or 0.0
+
+            # Pending trades
+            pending_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.resolved == False)
+            )
+            pending = pending_result.scalar_one() or 0
+
+            return {
+                "total": total,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "today_total": today_total,
+                "today_wins": today_wins,
+                "today_losses": today_total - today_wins,
+                "today_pnl": today_pnl,
+                "pending": pending,
+            }

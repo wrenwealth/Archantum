@@ -29,6 +29,7 @@ from archantum.analysis.settlement import SettlementLagDetector
 from archantum.analysis.certain_outcome import CertainOutcomeDetector
 from archantum.analysis.esports import EsportsArbitrageAnalyzer
 from archantum.analysis.wallet_strategy import WalletStrategyAnalyzer
+from archantum.analysis.paper_trading import PaperTradingEngine
 from archantum.analysis.arbitrage import (
     calculate_guaranteed_profit,
     classify_opportunity_reason,
@@ -105,6 +106,10 @@ class PollingEngine:
         # Wallet strategy analyzer
         self.wallet_strategy_analyzer = WalletStrategyAnalyzer(self.db) if settings.wallet_analysis_enabled else None
 
+        # Paper trading engine
+        self.paper_trader = PaperTradingEngine(self.db, self.alerter) if settings.paper_trading_enabled else None
+        self._paper_trading_task: asyncio.Task | None = None
+
         # Global alert dedup: (market_id, alert_type) -> last sent timestamp
         self._alert_cooldowns: dict[tuple[str, str], datetime] = {}
         self._alert_cooldown_hours = 1.0  # Don't re-alert same market+type within 1 hour
@@ -139,6 +144,14 @@ class PollingEngine:
 
     async def close(self):
         """Close connections."""
+        if self.paper_trader:
+            self.paper_trader.stop()
+        if self._paper_trading_task and not self._paper_trading_task.done():
+            self._paper_trading_task.cancel()
+            try:
+                await self._paper_trading_task
+            except asyncio.CancelledError:
+                pass
         if self.bot:
             await self.bot.stop()
         await self.source_manager.close()
@@ -1023,6 +1036,10 @@ class PollingEngine:
             console.print(f"[dim]Wallet Strategy Analyzer: Enabled (every {settings.wallet_analysis_poll_frequency} polls)[/dim]")
         else:
             console.print(f"[dim]Wallet Strategy Analyzer: Disabled[/dim]")
+        if settings.paper_trading_enabled:
+            console.print(f"[dim]Paper Trading: Enabled (tick every {settings.paper_trading_poll_interval}s, ${settings.paper_trading_trade_size:.0f}/trade)[/dim]")
+        else:
+            console.print(f"[dim]Paper Trading: Disabled[/dim]")
         console.print()
 
         # Catch-up analysis after offline gap
@@ -1031,6 +1048,10 @@ class PollingEngine:
             await self._send_startup_notification(catchup_results)
         except Exception as e:
             console.print(f"[red]Catch-up error (non-fatal): {e}[/red]")
+
+        # Launch paper trading engine as background task
+        if self.paper_trader:
+            self._paper_trading_task = asyncio.create_task(self.paper_trader.run())
 
         while self.running:
             try:
