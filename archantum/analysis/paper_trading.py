@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 from rich.console import Console
 
+from archantum.api.chainlink import ChainlinkClient
 from archantum.api.gamma import GammaClient, GammaMarket
 from archantum.api.hyperliquid import HyperliquidClient
 from archantum.config import settings
@@ -62,12 +63,14 @@ class PaperTradeSignal:
     hour_zone: HourZone = HourZone.SAFE
     btc_price_at_open: float = 0.0
     btc_price_now: float = 0.0
+    chainlink_price: float | None = None  # Chainlink BTC/USD for confirmation
     price_to_beat: float | None = None
     poly_up_price: float | None = None
     poly_down_price: float | None = None
     minutes_remaining: float = 0.0
     skip_reason: str | None = None
     market: GammaMarket | None = None
+    chainlink_confirms: bool | None = None  # True if Chainlink agrees with Hyper direction
 
 
 class PaperTradingEngine:
@@ -187,25 +190,50 @@ class PaperTradingEngine:
     def _evaluate_confidence(
         hyper_gap: float,
         poly_up_price: float | None,
-    ) -> tuple[Confidence, str]:
+        chainlink_gap: float | None = None,
+        btc_open: float = 0.0,
+    ) -> tuple[Confidence, str, bool | None]:
         """Evaluate confidence based on Hyperliquid vs Polymarket price lag.
 
         The "money glitch": Polymarket UI lags behind real BTC price.
         Resolution uses Chainlink (close to Hyperliquid), so when Hyper
         shows a clear gap but Poly odds are still lagging, that's our edge.
 
-        hyper_gap: BTC_now - btc_open (positive = UP)
+        hyper_gap: BTC_now (Hyperliquid) - btc_open (positive = UP)
         poly_up_price: Polymarket "Up" outcome price (>0.50 = market leans UP)
+        chainlink_gap: BTC_now (Chainlink) - btc_open (for confirmation)
+        btc_open: BTC price at window open
 
-        Returns (confidence, reasoning).
+        Returns (confidence, reasoning, chainlink_confirms).
         """
-        if poly_up_price is None:
-            return (
-                Confidence.MEDIUM if abs(hyper_gap) > 0 else Confidence.SKIP,
-                "No Poly data — Hyper-only signal",
-            )
-
         hyper_dir = "UP" if hyper_gap > 0 else "DOWN"
+
+        # Check if Chainlink confirms Hyperliquid direction
+        chainlink_confirms = None
+        chainlink_info = ""
+        if chainlink_gap is not None:
+            chainlink_dir = "UP" if chainlink_gap > 0 else "DOWN"
+            chainlink_confirms = (chainlink_dir == hyper_dir)
+            if chainlink_confirms:
+                chainlink_info = f" [Chainlink confirms: {chainlink_dir} ${chainlink_gap:+.0f}]"
+            else:
+                # Chainlink disagrees with Hyperliquid — reduce confidence or skip
+                return (
+                    Confidence.SKIP,
+                    f"Chainlink disagrees: Hyper={hyper_dir} (${hyper_gap:+.0f}) vs Chainlink={chainlink_dir} (${chainlink_gap:+.0f})",
+                    False,
+                )
+
+        if poly_up_price is None:
+            conf = Confidence.MEDIUM if abs(hyper_gap) > 0 else Confidence.SKIP
+            # Boost to HIGH if Chainlink confirms
+            if chainlink_confirms and conf == Confidence.MEDIUM:
+                conf = Confidence.HIGH
+            return (
+                conf,
+                f"No Poly data — Hyper-only signal{chainlink_info}",
+                chainlink_confirms,
+            )
 
         # Poly implied confidence strength (how far from 50/50)
         poly_strength = abs(poly_up_price - 0.50)
@@ -216,7 +244,8 @@ class PaperTradingEngine:
         if poly_strength < 0.10:
             return (
                 Confidence.HIGH,
-                f"Poly lagging: Hyper {hyper_dir} ${hyper_gap:+.0f} but Poly still ~50/50 (Up@{poly_up_price:.0%})",
+                f"Poly lagging: Hyper {hyper_dir} ${hyper_gap:+.0f} but Poly still ~50/50 (Up@{poly_up_price:.0%}){chainlink_info}",
+                chainlink_confirms,
             )
 
         # Poly has moved enough to have a directional opinion
@@ -227,6 +256,7 @@ class PaperTradingEngine:
             return (
                 Confidence.SKIP,
                 f"Conflicting: Hyper={hyper_dir} (${hyper_gap:+.0f}) vs Poly={poly_dir} (Up@{poly_up_price:.0%})",
+                chainlink_confirms,
             )
 
         # Same direction — check how much Poly has caught up
@@ -234,13 +264,17 @@ class PaperTradingEngine:
             # Poly moved somewhat but Hyper leads
             return (
                 Confidence.HIGH,
-                f"Hyper leads: gap ${hyper_gap:+.0f}, Poly catching up (Up@{poly_up_price:.0%})",
+                f"Hyper leads: gap ${hyper_gap:+.0f}, Poly catching up (Up@{poly_up_price:.0%}){chainlink_info}",
+                chainlink_confirms,
             )
         else:
             # Poly already moved strongly — consensus, less edge but still valid
+            # Boost to HIGH if Chainlink confirms
+            conf = Confidence.HIGH if chainlink_confirms else Confidence.MEDIUM
             return (
-                Confidence.MEDIUM,
-                f"Consensus: both agree {hyper_dir}, Poly already at Up@{poly_up_price:.0%}",
+                conf,
+                f"Consensus: both agree {hyper_dir}, Poly at Up@{poly_up_price:.0%}{chainlink_info}",
+                chainlink_confirms,
             )
 
     def _evaluate_signal(
@@ -253,11 +287,13 @@ class PaperTradingEngine:
         poly_up_price: float | None = None,
         btc_at_open: float = 0.0,
         market: GammaMarket | None = None,
+        chainlink_price: float | None = None,
     ) -> PaperTradeSignal:
         """Evaluate whether to place a paper trade."""
         signal = PaperTradeSignal(
             btc_price_at_open=btc_at_open,
             btc_price_now=btc_now,
+            chainlink_price=chainlink_price,
             price_to_beat=price_to_beat,
             poly_up_price=poly_up_price,
             poly_down_price=(1.0 - poly_up_price) if poly_up_price is not None else None,
@@ -291,9 +327,13 @@ class PaperTradingEngine:
         direction = TradeDirection.UP if hyper_gap > 0 else TradeDirection.DOWN
         signal.direction = direction
 
-        # 5. Confidence (Hyper vs Poly lag detection)
-        confidence, reason = self._evaluate_confidence(hyper_gap, poly_up_price)
+        # 5. Confidence (Hyper vs Poly lag detection + Chainlink confirmation)
+        chainlink_gap = (chainlink_price - price_to_beat) if chainlink_price else None
+        confidence, reason, chainlink_confirms = self._evaluate_confidence(
+            hyper_gap, poly_up_price, chainlink_gap, price_to_beat
+        )
         signal.confidence = confidence
+        signal.chainlink_confirms = chainlink_confirms
         if confidence == Confidence.SKIP:
             signal.skip_reason = reason
             return signal
@@ -502,6 +542,12 @@ class PaperTradingEngine:
         gap_text = f"${signal.gap_usd:+.0f}" if signal.gap_usd != 0 else "N/A"
         dir_text = signal.direction.value if signal.direction else "N/A"
 
+        # Chainlink confirmation status
+        chainlink_text = ""
+        if signal.chainlink_price is not None:
+            cl_status = "✓" if signal.chainlink_confirms else "✗"
+            chainlink_text = f"\n<b>Chainlink:</b> ${signal.chainlink_price:,.2f} {cl_status}"
+
         # HTML-escape the reason string (may contain < > from gap comparisons)
         reason = html.escape(signal.skip_reason or "Unknown")
 
@@ -510,7 +556,7 @@ class PaperTradingEngine:
 <b>Reason:</b> {reason}
 
 <b>BTC Open:</b> ${signal.btc_price_at_open:,.2f}
-<b>BTC Now:</b> ${signal.btc_price_now:,.2f}
+<b>BTC Now (Hyper):</b> ${signal.btc_price_now:,.2f}{chainlink_text}
 <b>Gap:</b> {gap_text} → {dir_text}
 <b>Poly:</b> {poly_text}
 <b>Zone:</b> {signal.hour_zone.value} | <b>Time left:</b> {signal.minutes_remaining:.1f}min
@@ -530,6 +576,12 @@ class PaperTradingEngine:
         if signal.poly_up_price is not None:
             poly_text = f"\n<b>Poly:</b> Up {signal.poly_up_price:.0%} / Down {signal.poly_down_price:.0%}"
 
+        # Chainlink confirmation
+        chainlink_text = ""
+        if signal.chainlink_price is not None:
+            cl_emoji = "✅" if signal.chainlink_confirms else "⚠️"
+            chainlink_text = f"\n<b>Chainlink:</b> ${signal.chainlink_price:,.2f} {cl_emoji}"
+
         record = f"{stats['wins']}W {stats['losses']}L"
         pnl_emoji = "📈" if stats['total_pnl'] >= 0 else "📉"
 
@@ -545,8 +597,8 @@ class PaperTradingEngine:
 <b>Why:</b> {reasoning}
 
 <b>BTC Open:</b> ${signal.btc_price_at_open:,.2f}
-<b>BTC Now:</b> ${signal.btc_price_now:,.2f}
-<b>Gap:</b> ${signal.gap_usd:+.0f}{poly_text}
+<b>BTC Now (Hyper):</b> ${signal.btc_price_now:,.2f}{chainlink_text}{poly_text}
+<b>Gap:</b> ${signal.gap_usd:+.0f}
 
 <b>Entry Price:</b> {settings.paper_trading_entry_price:.0%}
 <b>Trade Size:</b> ${settings.paper_trading_trade_size:.0f}
@@ -661,13 +713,26 @@ class PaperTradingEngine:
         if minutes_remaining > 5.5:
             return
 
-        # Get current BTC price
+        # Get current BTC price from Hyperliquid
         try:
             async with HyperliquidClient() as hl:
                 btc_now = await hl.get_btc_mid_price()
         except Exception as e:
             console.print(f"[yellow]Paper trading: cannot get BTC price: {e}[/yellow]")
             return
+
+        # Get Chainlink BTC price for confirmation (resolution oracle)
+        chainlink_price = None
+        try:
+            async with ChainlinkClient() as cl:
+                chainlink_price = await cl.get_btc_price()
+                if chainlink_price:
+                    console.print(
+                        f"[dim]Paper trading: Hyper ${btc_now:,.2f} | Chainlink ${chainlink_price:,.2f} "
+                        f"| diff ${abs(btc_now - chainlink_price):,.2f}[/dim]"
+                    )
+        except Exception as e:
+            console.print(f"[yellow]Paper trading: Chainlink unavailable: {e}[/yellow]")
 
         # Fetch fresh Polymarket "Up" price for this window's market
         poly_up = None
@@ -692,6 +757,7 @@ class PaperTradingEngine:
             poly_up_price=poly_up,
             btc_at_open=window.btc_price_at_open,
             market=window.market,
+            chainlink_price=chainlink_price,
         )
 
         if signal.confidence == Confidence.SKIP:
