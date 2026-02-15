@@ -461,6 +461,11 @@ class PaperTradingEngine:
             if resolved_dir is None:
                 continue
 
+            # VALIDATION: Check if Polymarket resolution matches Chainlink prediction
+            chainlink_expected = await self._get_chainlink_expected_resolution(trade)
+            if chainlink_expected and resolved_dir != chainlink_expected:
+                await self._alert_resolution_mismatch(trade, resolved_dir, chainlink_expected)
+
             await self._resolve_trade(trade, resolved_dir, btc_close=btc_close)
 
     @staticmethod
@@ -479,6 +484,54 @@ class PaperTradingEngine:
         elif down_price > up_price:
             return TradeDirection.DOWN
         return None  # Tie / not yet resolved
+
+    async def _get_chainlink_expected_resolution(self, trade) -> TradeDirection | None:
+        """Get what Chainlink says the resolution should be based on current price vs open."""
+        try:
+            async with ChainlinkClient() as cl:
+                chainlink_close = await cl.get_btc_price()
+                if chainlink_close is None:
+                    return None
+
+                # price_to_beat = btc_price_at_entry - gap_usd (reconstructed open price)
+                price_to_beat = trade.btc_price_at_open
+
+                if chainlink_close >= price_to_beat:
+                    return TradeDirection.UP
+                else:
+                    return TradeDirection.DOWN
+        except Exception as e:
+            console.print(f"[yellow]Chainlink validation check failed: {e}[/yellow]")
+            return None
+
+    async def _alert_resolution_mismatch(
+        self,
+        trade,
+        poly_resolved: TradeDirection,
+        chainlink_expected: TradeDirection,
+    ) -> None:
+        """Alert when Polymarket resolution doesn't match Chainlink expectation."""
+        console.print(
+            f"[bold red]RESOLUTION MISMATCH Trade #{trade.id}: "
+            f"Poly={poly_resolved.value} vs Chainlink={chainlink_expected.value}[/bold red]"
+        )
+
+        msg = f"""⚠️ <b>RESOLUTION MISMATCH DETECTED</b>
+
+<b>Trade #{trade.id}</b>
+<b>Polymarket resolved:</b> {poly_resolved.value}
+<b>Chainlink expected:</b> {chainlink_expected.value}
+
+<b>BTC Open (our record):</b> ${trade.btc_price_at_open:,.2f}
+<b>Gap at entry:</b> ${trade.gap_usd:+.0f}
+
+⚠️ Polymarket may have UI/data bug. Resolution might be incorrect.
+Consider pausing paper trading until resolved."""
+
+        try:
+            await self.alerter.send_raw_message(msg)
+        except Exception as e:
+            console.print(f"[red]Failed to send mismatch alert: {e}[/red]")
 
     async def _resolve_trade(
         self,

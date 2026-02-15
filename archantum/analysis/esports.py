@@ -53,6 +53,20 @@ MAP_KEYWORDS = [
     "anubis", "vertigo", "dust2", "dust 2",
 ]
 
+# Exclusion keywords - markets containing these are NOT esports
+EXCLUSION_KEYWORDS = [
+    # Traditional sports
+    "nba", "nfl", "nhl", "mlb", "mls",
+    "basketball", "football", "hockey", "baseball", "soccer",
+    "premier league", "la liga", "bundesliga", "serie a", "ligue 1",
+    "champions league", "world cup", "fifa",
+    "western conference", "eastern conference",
+    "playoffs", "super bowl", "stanley cup", "world series",
+    # Politics/other
+    "trump", "biden", "election", "president", "congress",
+    "bitcoin", "btc", "ethereum", "crypto",
+]
+
 
 class EsportsGame(Enum):
     """Esports game classification."""
@@ -211,6 +225,10 @@ class EsportsArbitrageAnalyzer:
 
             combined = f"{text} {slug}"
 
+            # Skip if contains exclusion keywords (NBA, NFL, etc.)
+            if any(exc in combined for exc in EXCLUSION_KEYWORDS):
+                continue
+
             if any(kw in combined for kw in all_keywords):
                 info = EsportsMarketInfo(
                     market=market,
@@ -229,6 +247,14 @@ class EsportsArbitrageAnalyzer:
     ) -> list[EsportsOpportunity]:
         """Run all esports arbitrage checks. Returns opportunities above min edge."""
         esports_markets = self.discover_esports_markets(markets)
+        if not esports_markets:
+            return []
+
+        # Only keep Valorant and Counter-Strike markets (skip UNKNOWN)
+        esports_markets = [
+            m for m in esports_markets
+            if m.game in (EsportsGame.VALORANT, EsportsGame.COUNTER_STRIKE)
+        ]
         if not esports_markets:
             return []
 
