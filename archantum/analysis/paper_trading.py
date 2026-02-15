@@ -372,6 +372,12 @@ class PaperTradingEngine:
         if not window:
             return None
 
+        # Use actual Polymarket price for entry, fallback to config if unavailable
+        if signal.direction == TradeDirection.UP:
+            actual_entry_price = signal.poly_up_price or settings.paper_trading_entry_price
+        else:
+            actual_entry_price = signal.poly_down_price or settings.paper_trading_entry_price
+
         trade_data = {
             "window_id": str(window.window_ts),
             "window_start": window.window_start,
@@ -382,7 +388,7 @@ class PaperTradingEngine:
             "gap_usd": signal.gap_usd,
             "direction": signal.direction.value,
             "confidence": signal.confidence.value,
-            "entry_price": settings.paper_trading_entry_price,
+            "entry_price": actual_entry_price,
             "trade_size_usd": settings.paper_trading_trade_size,
             "minutes_to_resolve": signal.minutes_remaining,
             "hour_zone": signal.hour_zone.value,
@@ -393,7 +399,7 @@ class PaperTradingEngine:
 
         # Send entry alert
         stats = await self.db.get_paper_trade_stats()
-        msg = self._format_entry_alert(signal, trade.id, stats)
+        msg = self._format_entry_alert(signal, trade.id, stats, actual_entry_price)
         await self.alerter.send_raw_message(msg)
 
         window.traded = True
@@ -566,7 +572,7 @@ class PaperTradingEngine:
 <b>Zone:</b> {signal.hour_zone.value} | <b>Time left:</b> {signal.minutes_remaining:.1f}min
 <b>Time:</b> {now_utc.strftime('%H:%M:%S')} UTC / {now_wib.strftime('%H:%M:%S')} WIB"""
 
-    def _format_entry_alert(self, signal: PaperTradeSignal, trade_id: int, stats: dict) -> str:
+    def _format_entry_alert(self, signal: PaperTradeSignal, trade_id: int, stats: dict, entry_price: float) -> str:
         """Format paper trade entry alert."""
         dir_emoji = "🟢" if signal.direction == TradeDirection.UP else "🔴"
         conf_emoji = "⚡" if signal.confidence == Confidence.HIGH else "🟡"
@@ -604,7 +610,7 @@ class PaperTradingEngine:
 <b>BTC Now (Hyper):</b> ${signal.btc_price_now:,.2f}{chainlink_text}{poly_text}
 <b>Gap:</b> ${signal.gap_usd:+.0f}
 
-<b>Entry Price:</b> {settings.paper_trading_entry_price:.0%}
+<b>Entry Price:</b> {entry_price:.0%} (actual Poly)
 <b>Trade Size:</b> ${settings.paper_trading_trade_size:.0f}
 <b>Time Left:</b> {signal.minutes_remaining:.1f} min
 
