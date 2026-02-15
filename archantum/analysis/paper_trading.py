@@ -543,6 +543,7 @@ class PaperTradingEngine:
     def _format_skip_alert(self, signal: PaperTradeSignal) -> str:
         """Format a Telegram notification when a trade is skipped."""
         now_utc = datetime.utcnow()
+        now_et = now_utc - timedelta(hours=5)  # ET = UTC-5
         now_wib = now_utc + timedelta(hours=7)
 
         poly_text = "N/A"
@@ -570,7 +571,7 @@ class PaperTradingEngine:
 <b>Gap:</b> {gap_text} → {dir_text}
 <b>Poly:</b> {poly_text}
 <b>Zone:</b> {signal.hour_zone.value} | <b>Time left:</b> {signal.minutes_remaining:.1f}min
-<b>Time:</b> {now_utc.strftime('%H:%M:%S')} UTC / {now_wib.strftime('%H:%M:%S')} WIB"""
+<b>Time:</b> {now_et.strftime('%H:%M:%S')} ET / {now_wib.strftime('%H:%M:%S')} WIB"""
 
     def _format_entry_alert(self, signal: PaperTradeSignal, trade_id: int, stats: dict, entry_price: float) -> str:
         """Format paper trade entry alert."""
@@ -578,8 +579,9 @@ class PaperTradingEngine:
         conf_emoji = "⚡" if signal.confidence == Confidence.HIGH else "🟡"
         zone_emoji = {"SAFE": "🟢", "CAUTION": "🟡", "BLACKLIST": "🔴"}.get(signal.hour_zone.value, "⚪")
 
-        # Time in UTC and WIB
+        # Time in ET and WIB
         now_utc = datetime.utcnow()
+        now_et = now_utc - timedelta(hours=5)  # ET = UTC-5
         now_wib = now_utc + timedelta(hours=7)
 
         poly_text = ""
@@ -614,7 +616,7 @@ class PaperTradingEngine:
 <b>Trade Size:</b> ${settings.paper_trading_trade_size:.0f}
 <b>Time Left:</b> {signal.minutes_remaining:.1f} min
 
-<b>Time:</b> {now_utc.strftime('%H:%M:%S')} UTC / {now_wib.strftime('%H:%M:%S')} WIB
+<b>Time:</b> {now_et.strftime('%H:%M:%S')} ET / {now_wib.strftime('%H:%M:%S')} WIB
 
 {pnl_emoji} <b>Running:</b> {record} | PnL ${stats['total_pnl']:+.2f}"""
 
