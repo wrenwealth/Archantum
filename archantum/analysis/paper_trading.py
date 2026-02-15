@@ -373,10 +373,15 @@ class PaperTradingEngine:
             return None
 
         # Use actual Polymarket price for entry, fallback to config if unavailable
+        # Add 5% slippage to account for orderbook depth and spread
+        SLIPPAGE = 0.05
         if signal.direction == TradeDirection.UP:
-            actual_entry_price = signal.poly_up_price or settings.paper_trading_entry_price
+            base_price = signal.poly_up_price or settings.paper_trading_entry_price
         else:
-            actual_entry_price = signal.poly_down_price or settings.paper_trading_entry_price
+            base_price = signal.poly_down_price or settings.paper_trading_entry_price
+
+        # Apply slippage: assume we pay 5% more than displayed price
+        actual_entry_price = min(base_price + SLIPPAGE, 0.99)  # Cap at 99¢
 
         trade_data = {
             "window_id": str(window.window_ts),
@@ -601,7 +606,7 @@ Consider pausing paper trading until resolved."""
 
         poly_text = "N/A"
         if signal.poly_up_price is not None:
-            poly_text = f"Up {signal.poly_up_price:.0%} / Down {signal.poly_down_price:.0%}"
+            poly_text = f"Up {signal.poly_up_price*100:.0f}¢ / Down {signal.poly_down_price*100:.0f}¢"
 
         gap_text = f"${signal.gap_usd:+.0f}" if signal.gap_usd != 0 else "N/A"
         dir_text = signal.direction.value if signal.direction else "N/A"
@@ -639,7 +644,7 @@ Consider pausing paper trading until resolved."""
 
         poly_text = ""
         if signal.poly_up_price is not None:
-            poly_text = f"\n<b>Poly:</b> Up {signal.poly_up_price:.0%} / Down {signal.poly_down_price:.0%}"
+            poly_text = f"\n<b>Poly:</b> Up {signal.poly_up_price*100:.0f}¢ / Down {signal.poly_down_price*100:.0f}¢"
 
         # Chainlink confirmation
         chainlink_text = ""
@@ -665,7 +670,7 @@ Consider pausing paper trading until resolved."""
 <b>BTC Now (Hyper):</b> ${signal.btc_price_now:,.2f}{chainlink_text}{poly_text}
 <b>Gap:</b> ${signal.gap_usd:+.0f}
 
-<b>Entry Price:</b> {entry_price:.0%} (actual Poly)
+<b>Entry Price:</b> {entry_price*100:.0f}¢ (Poly +5¢ slippage)
 <b>Trade Size:</b> ${settings.paper_trading_trade_size:.0f}
 <b>Time Left:</b> {signal.minutes_remaining:.1f} min
 
