@@ -1136,6 +1136,8 @@ Consider pausing paper trading until resolved."""
             try:
                 await self._tick()
                 await self._check_resolution()
+            except asyncio.CancelledError:
+                console.print("[yellow]Paper trading coroutine cancelled, restarting loop...[/yellow]")
             except Exception as e:
                 console.print(f"[red]Paper trading tick error: {e}[/red]")
 
