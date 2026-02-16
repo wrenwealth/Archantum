@@ -1136,10 +1136,13 @@ Consider pausing paper trading until resolved."""
             try:
                 await self._tick()
                 await self._check_resolution()
-            except asyncio.CancelledError:
-                console.print("[yellow]Paper trading coroutine cancelled, restarting loop...[/yellow]")
-            except Exception as e:
-                console.print(f"[red]Paper trading tick error: {e}[/red]")
+            except BaseException as e:
+                console.print(f"[red]Paper trading tick error ({type(e).__name__}): {e}[/red]")
+                import traceback
+                traceback.print_exc()
+                # Re-raise KeyboardInterrupt so the process can actually stop
+                if isinstance(e, KeyboardInterrupt):
+                    raise
 
             await asyncio.sleep(settings.paper_trading_poll_interval)
 
