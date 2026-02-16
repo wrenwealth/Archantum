@@ -96,8 +96,91 @@ class ChainlinkClient:
 
         return None
 
-    async def _fetch_from_rpc(self, rpc_url: str, contract: str) -> tuple[float | None, int | None]:
+    async def get_btc_price_at_timestamp(self, target_ts: int) -> float | None:
+        """Get Chainlink BTC/USD price at a specific Unix timestamp.
+
+        Uses Polygon block estimation to find the block closest to target_ts,
+        then queries Chainlink at that historical block. This gives us the
+        exact price Polymarket uses as "price to beat" for BTC up/down markets.
+
+        Args:
+            target_ts: Unix timestamp to query price at.
+
+        Returns:
+            BTC price at that timestamp, or None on failure.
+        """
+        for i in range(len(self.POLYGON_RPC_ENDPOINTS)):
+            rpc_url = self.POLYGON_RPC_ENDPOINTS[
+                (self._polygon_rpc_index + i) % len(self.POLYGON_RPC_ENDPOINTS)
+            ]
+            try:
+                price = await self._fetch_at_timestamp(rpc_url, target_ts)
+                if price is not None:
+                    self._polygon_rpc_index = (
+                        (self._polygon_rpc_index + i) % len(self.POLYGON_RPC_ENDPOINTS)
+                    )
+                    return price
+            except Exception:
+                continue
+        return None
+
+    async def _fetch_at_timestamp(self, rpc_url: str, target_ts: int) -> float | None:
+        """Fetch Chainlink price at a specific timestamp via Polygon block estimation."""
+        # 1. Get latest block to compute offset
+        resp = await self.client.post(rpc_url, json={
+            "jsonrpc": "2.0",
+            "method": "eth_getBlockByNumber",
+            "params": ["latest", False],
+            "id": 1,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        if "result" not in data or not data["result"]:
+            return None
+
+        latest_block = int(data["result"]["number"], 16)
+        latest_ts = int(data["result"]["timestamp"], 16)
+
+        # 2. Estimate target block (~2.1s per Polygon block)
+        seconds_back = latest_ts - target_ts
+        if seconds_back < 0:
+            # Target is in the future, use latest
+            seconds_back = 0
+        blocks_back = int(seconds_back / 2.1)
+        target_block = latest_block - blocks_back
+
+        # 3. Verify and fine-tune
+        resp2 = await self.client.post(rpc_url, json={
+            "jsonrpc": "2.0",
+            "method": "eth_getBlockByNumber",
+            "params": [hex(target_block), False],
+            "id": 2,
+        })
+        resp2.raise_for_status()
+        data2 = resp2.json()
+        if "result" not in data2 or not data2["result"]:
+            return None
+
+        block_ts = int(data2["result"]["timestamp"], 16)
+        diff = block_ts - target_ts
+        if abs(diff) > 5:
+            # Adjust if more than 5 seconds off
+            adjust = int(diff / 2.1)
+            target_block -= adjust
+
+        # 4. Query Chainlink at the target block
+        price, _ = await self._fetch_from_rpc(
+            rpc_url, CHAINLINK_BTC_USD_POLYGON, block=hex(target_block)
+        )
+        return price
+
+    async def _fetch_from_rpc(self, rpc_url: str, contract: str, block: str = "latest") -> tuple[float | None, int | None]:
         """Fetch price from a specific RPC endpoint.
+
+        Args:
+            rpc_url: RPC endpoint URL.
+            contract: Chainlink price feed contract address.
+            block: Block number (hex) or "latest".
 
         Returns:
             (price, updated_at_timestamp) or (None, None) on failure.
@@ -110,7 +193,7 @@ class ChainlinkClient:
                     "to": contract,
                     "data": LATEST_ROUND_DATA_SELECTOR,
                 },
-                "latest",
+                block,
             ],
             "id": 1,
         }

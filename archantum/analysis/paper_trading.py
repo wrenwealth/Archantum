@@ -14,6 +14,7 @@ import httpx
 from rich.console import Console
 
 from archantum.api.chainlink import ChainlinkClient
+from archantum.api.clob import CLOBClient
 from archantum.api.gamma import GammaClient, GammaMarket
 from archantum.api.hyperliquid import HyperliquidClient
 from archantum.config import settings
@@ -67,6 +68,8 @@ class PaperTradeSignal:
     price_to_beat: float | None = None
     poly_up_price: float | None = None
     poly_down_price: float | None = None
+    poly_up_ask: float | None = None   # Best ask for Up (what you'd pay to buy Up)
+    poly_down_ask: float | None = None  # Best ask for Down (what you'd pay to buy Down)
     minutes_remaining: float = 0.0
     skip_reason: str | None = None
     market: GammaMarket | None = None
@@ -152,6 +155,39 @@ class PaperTradingEngine:
         except Exception as e:
             console.print(f"[yellow]Paper trading: market discovery error: {e}[/yellow]")
             return self._market_cache.get(window_ts)
+
+    async def _fetch_clob_prices(self, market: GammaMarket) -> tuple[float | None, float | None, float | None, float | None]:
+        """Fetch real CLOB orderbook prices for a BTC 15-min market.
+
+        Returns (up_mid, down_mid, up_ask, down_ask).
+        These are the actual prices on Polymarket, not the lagging Gamma outcomePrices.
+        """
+        if not market.clob_token_ids or len(market.clob_token_ids) < 2:
+            return None, None, None, None
+
+        # outcomes: ["Up", "Down"], clobTokenIds: [up_token, down_token]
+        up_token = market.clob_token_ids[0]
+        down_token = market.clob_token_ids[1]
+
+        up_mid = None
+        down_mid = None
+        up_ask = None
+        down_ask = None
+
+        try:
+            async with CLOBClient() as clob:
+                up_mid = await clob.get_midpoint(up_token)
+                down_mid = await clob.get_midpoint(down_token)
+
+                up_book = await clob.get_orderbook(up_token)
+                up_ask = up_book.best_ask
+
+                down_book = await clob.get_orderbook(down_token)
+                down_ask = down_book.best_ask
+        except Exception as e:
+            console.print(f"[yellow]Paper trading: CLOB price fetch error: {e}[/yellow]")
+
+        return up_mid, down_mid, up_ask, down_ask
 
     # ── Filters ─────────────────────────────────────────────────────
 
@@ -276,7 +312,7 @@ class PaperTradingEngine:
             conf = Confidence.HIGH if chainlink_confirms else Confidence.MEDIUM
             return (
                 conf,
-                f"Consensus: both agree {hyper_dir}, Poly at Up@{poly_up_price:.0%}{chainlink_info}",
+                f"Consensus: both agree {hyper_dir}, gap ${hyper_gap:+.0f}, Poly at Up@{poly_up_price:.0%}{chainlink_info}",
                 chainlink_confirms,
             )
 
@@ -372,16 +408,23 @@ class PaperTradingEngine:
         if not window:
             return None
 
-        # Use actual Polymarket price for entry, fallback to config if unavailable
-        # Add 5% slippage to account for orderbook depth and spread
-        SLIPPAGE = 0.05
+        # Use CLOB best ask (what you'd actually pay) for realistic entry pricing
+        # Fall back to midpoint + slippage if ask is unavailable
+        SLIPPAGE = 0.02  # Reduced: CLOB ask already reflects real cost
         if signal.direction == TradeDirection.UP:
-            base_price = signal.poly_up_price or settings.paper_trading_entry_price
+            ask_price = signal.poly_up_ask
+            mid_price = signal.poly_up_price
         else:
-            base_price = signal.poly_down_price or settings.paper_trading_entry_price
+            ask_price = signal.poly_down_ask
+            mid_price = signal.poly_down_price
 
-        # Apply slippage: assume we pay 5% more than displayed price
-        actual_entry_price = min(base_price + SLIPPAGE, 0.99)  # Cap at 99¢
+        if ask_price is not None:
+            # Best ask = real price you'd pay on Polymarket
+            actual_entry_price = min(ask_price + SLIPPAGE, 0.99)
+        elif mid_price is not None:
+            actual_entry_price = min(mid_price + 0.05, 0.99)
+        else:
+            actual_entry_price = settings.paper_trading_entry_price
 
         trade_data = {
             "window_id": str(window.window_ts),
@@ -670,7 +713,7 @@ Consider pausing paper trading until resolved."""
 <b>BTC Now (Hyper):</b> ${signal.btc_price_now:,.2f}{chainlink_text}{poly_text}
 <b>Gap:</b> ${signal.gap_usd:+.0f}
 
-<b>Entry Price:</b> {entry_price*100:.0f}¢ (Poly +5¢ slippage)
+<b>Entry Price:</b> {entry_price*100:.0f}¢ (CLOB ask +2¢)
 <b>Trade Size:</b> ${settings.paper_trading_trade_size:.0f}
 <b>Time Left:</b> {signal.minutes_remaining:.1f} min
 
@@ -736,20 +779,66 @@ Consider pausing paper trading until resolved."""
 
         # Detect window transition
         if self._current_window is None or self._current_window.window_ts != window_ts:
-            # New window — capture opening price from Hyperliquid
+            # New window — get the exact Chainlink BTC/USD price at window start.
+            # This is the "price to beat" that Polymarket uses for resolution.
+            # We query Chainlink at the specific Polygon block matching window_ts.
+            btc_open = None
+            price_source = "chainlink-historical"
+            try:
+                async with ChainlinkClient() as cl:
+                    btc_open = await cl.get_btc_price_at_timestamp(window_ts)
+            except Exception as e:
+                console.print(f"[yellow]Paper trading: Chainlink historical price error: {e}[/yellow]")
+
+            # Fallback: current Chainlink price
+            if btc_open is None:
+                price_source = "chainlink-latest"
+                try:
+                    async with ChainlinkClient() as cl:
+                        btc_open = await cl.get_btc_price()
+                except Exception:
+                    pass
+
+            # Last resort: Hyperliquid
+            if btc_open is None:
+                price_source = "hyperliquid"
+                try:
+                    async with HyperliquidClient() as hl:
+                        btc_open = await hl.get_btc_mid_price()
+                except Exception as e:
+                    console.print(f"[yellow]Paper trading: cannot get BTC open price: {e}[/yellow]")
+                    return
+
+            # Cross-validate: compare with Hyperliquid to detect stale/bad data
+            hyper_open = None
             try:
                 async with HyperliquidClient() as hl:
-                    btc_open = await hl.get_btc_mid_price()
-            except Exception as e:
-                console.print(f"[yellow]Paper trading: cannot get BTC open price: {e}[/yellow]")
-                return
+                    hyper_open = await hl.get_btc_mid_price()
+            except Exception:
+                pass
+
+            if hyper_open is not None and abs(btc_open - hyper_open) > 50:
+                wib_now = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S")
+                msg = (
+                    f"\u26a0\ufe0f <b>PRICE TO BEAT MISMATCH</b>\n\n"
+                    f"<b>Window:</b> {datetime.utcfromtimestamp(window_ts).strftime('%H:%M')} UTC\n"
+                    f"<b>Our BTC Open ({price_source}):</b> ${btc_open:,.2f}\n"
+                    f"<b>Hyperliquid BTC:</b> ${hyper_open:,.2f}\n"
+                    f"<b>Diff:</b> ${abs(btc_open - hyper_open):,.2f}\n\n"
+                    f"\u26a0\ufe0f Price to beat may be inaccurate. "
+                    f"Trades this window may have wrong direction."
+                )
+                console.print(f"[bold red]Paper trading: PRICE MISMATCH ${abs(btc_open - hyper_open):,.2f}[/bold red]")
+                try:
+                    await self.alerter.send_raw_message(msg)
+                except Exception:
+                    pass
 
             # Discover market for this window via slug pattern
             market = await self._discover_btc_15m_market(window_ts)
             market_id = market.id if market else None
 
-            # These markets resolve "Up" if BTC close >= open.
-            # price_to_beat = BTC price at window open (captured by Hyperliquid)
+            # These markets resolve "Up" if BTC close >= open (per Chainlink).
             price_to_beat = btc_open
 
             self._current_window = WindowState(
@@ -765,7 +854,7 @@ Consider pausing paper trading until resolved."""
             wib_start = window_start + timedelta(hours=7)
             console.print(
                 f"[dim]Paper trading: new window {wib_start.strftime('%H:%M')} WIB "
-                f"| BTC open ${btc_open:,.2f} "
+                f"| BTC open ${btc_open:,.2f} ({price_source}) "
                 f"| market: {market_id or 'none'}[/dim]"
             )
 
@@ -808,18 +897,20 @@ Consider pausing paper trading until resolved."""
         except Exception as e:
             console.print(f"[yellow]Paper trading: Chainlink unavailable: {e}[/yellow]")
 
-        # Fetch fresh Polymarket "Up" price for this window's market
+        # Fetch real Polymarket prices from CLOB orderbook (not lagging Gamma outcomePrices)
         poly_up = None
-        if window.market_id:
-            # Invalidate cache first to get fresh prices
-            self._market_cache.pop(window.window_ts, None)
-            fresh_market = await self._discover_btc_15m_market(window.window_ts)
-            if fresh_market and fresh_market.outcome_prices:
-                try:
-                    # outcomes: ["Up", "Down"], outcomePrices: ["0.6", "0.4"]
-                    poly_up = float(fresh_market.outcome_prices[0])
-                except (ValueError, TypeError, IndexError):
-                    pass
+        poly_up_ask = None
+        poly_down_ask = None
+        if window.market:
+            up_mid, down_mid, up_ask, down_ask = await self._fetch_clob_prices(window.market)
+            poly_up = up_mid
+            poly_up_ask = up_ask
+            poly_down_ask = down_ask
+            if up_mid is not None:
+                console.print(
+                    f"[dim]Paper trading: CLOB prices — Up mid={up_mid:.2f} ask={up_ask} | "
+                    f"Down mid={down_mid} ask={down_ask}[/dim]"
+                )
 
         # Evaluate signal
         signal = self._evaluate_signal(
@@ -833,6 +924,9 @@ Consider pausing paper trading until resolved."""
             market=window.market,
             chainlink_price=chainlink_price,
         )
+        # Attach CLOB ask prices for realistic entry pricing
+        signal.poly_up_ask = poly_up_ask
+        signal.poly_down_ask = poly_down_ask
 
         if signal.confidence == Confidence.SKIP:
             console.print(f"[dim]Paper trading: SKIP — {signal.skip_reason}[/dim]")
