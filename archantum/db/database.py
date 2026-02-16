@@ -1278,3 +1278,78 @@ class Database:
                 "today_pnl": today_pnl,
                 "pending": pending,
             }
+
+    async def get_safe_paper_trade_stats(self) -> dict[str, Any]:
+        """Get paper trade statistics for safe mode trades only."""
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        async with self.async_session() as session:
+            total_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.safe_mode == True)
+            )
+            total = total_result.scalar_one() or 0
+
+            wins_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.win == True)
+                .where(PaperTrade.safe_mode == True)
+            )
+            wins = wins_result.scalar_one() or 0
+
+            losses = total - wins
+            win_rate = (wins / total * 100) if total > 0 else 0.0
+
+            pnl_result = await session.execute(
+                select(func.sum(PaperTrade.pnl_usd))
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.safe_mode == True)
+            )
+            total_pnl = pnl_result.scalar_one() or 0.0
+
+            today_total_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.entry_at >= today_start)
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.safe_mode == True)
+            )
+            today_total = today_total_result.scalar_one() or 0
+
+            today_wins_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.entry_at >= today_start)
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.win == True)
+                .where(PaperTrade.safe_mode == True)
+            )
+            today_wins = today_wins_result.scalar_one() or 0
+
+            today_pnl_result = await session.execute(
+                select(func.sum(PaperTrade.pnl_usd))
+                .where(PaperTrade.entry_at >= today_start)
+                .where(PaperTrade.resolved == True)
+                .where(PaperTrade.safe_mode == True)
+            )
+            today_pnl = today_pnl_result.scalar_one() or 0.0
+
+            pending_result = await session.execute(
+                select(func.count(PaperTrade.id))
+                .where(PaperTrade.resolved == False)
+                .where(PaperTrade.safe_mode == True)
+            )
+            pending = pending_result.scalar_one() or 0
+
+            return {
+                "total": total,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "today_total": today_total,
+                "today_wins": today_wins,
+                "today_losses": today_total - today_wins,
+                "today_pnl": today_pnl,
+                "pending": pending,
+            }

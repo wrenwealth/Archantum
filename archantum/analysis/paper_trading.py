@@ -115,6 +115,12 @@ class PaperTradingEngine:
         # Track traded windows to prevent duplicate trades (robust dedup)
         self._traded_windows: set[int] = set()
 
+        # Safe scalper mode: independent parallel tracking
+        self._safe_traded_windows: set[int] = set()
+        self._safe_wins = 0
+        self._safe_losses = 0
+        self._safe_pnl = 0.0
+
     # ── Market Discovery ────────────────────────────────────────────
 
     async def _discover_btc_15m_market(self, window_ts: int) -> GammaMarket | None:
@@ -467,6 +473,105 @@ class PaperTradingEngine:
         console.print(f"[bold green]Paper trade #{trade.id} placed: {signal.direction.value} (gap ${signal.gap_usd:.0f})[/bold green]")
         return trade.id
 
+    # ── Safe Scalper ─────────────────────────────────────────────────
+
+    async def _evaluate_safe_scalper(
+        self,
+        window: WindowState,
+        btc_now: float,
+        chainlink_price: float | None,
+        poly_up_ask: float | None,
+        poly_down_ask: float | None,
+        minutes_remaining: float,
+    ) -> None:
+        """Evaluate and place a safe scalper trade if criteria are met.
+
+        Criteria: < 1 min remaining, |gap| >= $38, CLOB ask >= 95¢,
+        Chainlink confirms Hyperliquid direction.
+        """
+        if window.price_to_beat is None:
+            return
+
+        gap = btc_now - window.price_to_beat
+        abs_gap = abs(gap)
+
+        if abs_gap < 38:
+            console.print(f"[dim][SAFE] Skip: gap ${abs_gap:.0f} < $38[/dim]")
+            return
+
+        # Determine direction from Hyperliquid
+        hl_direction = TradeDirection.UP if gap > 0 else TradeDirection.DOWN
+
+        # Chainlink must confirm direction
+        if chainlink_price is None:
+            console.print("[dim][SAFE] Skip: Chainlink unavailable[/dim]")
+            return
+
+        cl_gap = chainlink_price - window.price_to_beat
+        cl_direction = TradeDirection.UP if cl_gap > 0 else TradeDirection.DOWN
+
+        if cl_direction != hl_direction:
+            console.print(
+                f"[dim][SAFE] Skip: Chainlink disagrees "
+                f"(HL={hl_direction.value}, CL={cl_direction.value})[/dim]"
+            )
+            return
+
+        # Check CLOB ask price >= 0.95 for the direction we're trading
+        if hl_direction == TradeDirection.UP:
+            ask_price = poly_up_ask
+        else:
+            ask_price = poly_down_ask
+
+        if ask_price is None:
+            console.print("[dim][SAFE] Skip: CLOB ask unavailable[/dim]")
+            return
+
+        if ask_price < 0.95:
+            console.print(f"[dim][SAFE] Skip: ask {ask_price:.2f} < 0.95[/dim]")
+            return
+
+        # All criteria met — place safe trade
+        await self._place_safe_trade(
+            window, hl_direction, ask_price, abs_gap, minutes_remaining,
+        )
+
+    async def _place_safe_trade(
+        self,
+        window: WindowState,
+        direction: TradeDirection,
+        entry_price: float,
+        gap: float,
+        minutes_remaining: float,
+    ) -> None:
+        """Place a safe scalper paper trade (terminal only, no Telegram)."""
+        trade_data = {
+            "window_id": str(window.window_ts),
+            "window_start": window.window_start,
+            "window_end": window.window_end,
+            "market_id": window.market_id,
+            "btc_price_at_open": window.btc_price_at_open,
+            "btc_price_at_entry": window.price_to_beat + gap if direction == TradeDirection.UP else window.price_to_beat - gap,
+            "gap_usd": gap if direction == TradeDirection.UP else -gap,
+            "direction": direction.value,
+            "confidence": "HIGH",
+            "entry_price": entry_price,
+            "trade_size_usd": settings.paper_trading_trade_size,
+            "minutes_to_resolve": minutes_remaining,
+            "hour_zone": "SAFE",
+            "entry_at": datetime.utcnow(),
+            "safe_mode": True,
+        }
+
+        trade = await self.db.save_paper_trade(trade_data)
+
+        self._safe_traded_windows.add(window.window_ts)
+        console.print(
+            f"[bold cyan][SAFE] Trade #{trade.id}: {direction.value} "
+            f"@ {entry_price*100:.0f}¢ | Gap ${gap:.0f} | "
+            f"{minutes_remaining:.1f}min left[/bold cyan]"
+        )
+
     # ── Resolution ──────────────────────────────────────────────────
 
     async def _check_resolution(self) -> None:
@@ -601,6 +706,9 @@ Consider pausing paper trading until resolved."""
         inconclusive: bool = False,
     ) -> None:
         """Resolve a single paper trade."""
+        is_safe = getattr(trade, "safe_mode", False)
+        tag = "[SAFE] " if is_safe else ""
+
         if inconclusive:
             await self.db.resolve_paper_trade(
                 trade_id=trade.id,
@@ -609,7 +717,7 @@ Consider pausing paper trading until resolved."""
                 pnl_usd=0.0,
                 btc_price_at_close=btc_close or 0.0,
             )
-            console.print(f"[yellow]Paper trade #{trade.id} inconclusive (timeout)[/yellow]")
+            console.print(f"[yellow]{tag}Paper trade #{trade.id} inconclusive (timeout)[/yellow]")
             return
 
         win = (resolved_dir.value == trade.direction)
@@ -621,33 +729,45 @@ Consider pausing paper trading until resolved."""
             # shares = trade_size / entry_price
             # profit = shares * (1 - entry_price)
             pnl = trade_size * (1.0 - entry_price) / entry_price
-            self._total_wins += 1
-            self._consecutive_losses = 0
-
-            # Tight mode: count consecutive wins to exit tight mode
-            if self._tight_mode:
-                self._wins_since_tight += 1
-                if self._wins_since_tight >= 5:
-                    self._tight_mode = False
-                    self._wins_since_tight = 0
-                    console.print("[bold green]Paper trading: 5 win streak! Exiting tight mode → normal (5.5 min)[/bold green]")
         else:
             # Loss: lose the trade size
             pnl = -trade_size
-            self._total_losses += 1
-            self._consecutive_losses += 1
-            self._daily_losses += 1
 
-            # Enter tight mode on any loss
-            if not self._tight_mode:
-                self._tight_mode = True
-                self._wins_since_tight = 0
-                console.print("[bold yellow]Paper trading: loss detected → entering tight mode (3 min only)[/bold yellow]")
+        if is_safe:
+            # Safe mode: track separate stats, no tight mode impact
+            if win:
+                self._safe_wins += 1
             else:
-                # Already tight, reset win counter
-                self._wins_since_tight = 0
+                self._safe_losses += 1
+            self._safe_pnl += pnl
+        else:
+            # Normal mode: update running stats and tight mode
+            if win:
+                self._total_wins += 1
+                self._consecutive_losses = 0
 
-        self._total_pnl += pnl
+                # Tight mode: count consecutive wins to exit tight mode
+                if self._tight_mode:
+                    self._wins_since_tight += 1
+                    if self._wins_since_tight >= 5:
+                        self._tight_mode = False
+                        self._wins_since_tight = 0
+                        console.print("[bold green]Paper trading: 5 win streak! Exiting tight mode → normal (5.5 min)[/bold green]")
+            else:
+                self._total_losses += 1
+                self._consecutive_losses += 1
+                self._daily_losses += 1
+
+                # Enter tight mode on any loss
+                if not self._tight_mode:
+                    self._tight_mode = True
+                    self._wins_since_tight = 0
+                    console.print("[bold yellow]Paper trading: loss detected → entering tight mode (3 min only)[/bold yellow]")
+                else:
+                    # Already tight, reset win counter
+                    self._wins_since_tight = 0
+
+            self._total_pnl += pnl
 
         await self.db.resolve_paper_trade(
             trade_id=trade.id,
@@ -655,18 +775,23 @@ Consider pausing paper trading until resolved."""
             win=win,
             pnl_usd=pnl,
             btc_price_at_close=btc_close or 0.0,
-            running_pnl=self._total_pnl,
-            running_wins=self._total_wins,
-            running_losses=self._total_losses,
+            running_pnl=self._safe_pnl if is_safe else self._total_pnl,
+            running_wins=self._safe_wins if is_safe else self._total_wins,
+            running_losses=self._safe_losses if is_safe else self._total_losses,
         )
 
-        # Send result alert
-        stats = await self.db.get_paper_trade_stats()
-        msg = self._format_result_alert(trade, resolved_dir, win, pnl, btc_close, stats)
-        await self.alerter.send_raw_message(msg)
-
         result_str = "WIN" if win else "LOSS"
-        console.print(f"[{'green' if win else 'red'}]Paper trade #{trade.id} {result_str}: ${pnl:+.2f}[/{'green' if win else 'red'}]")
+
+        if is_safe:
+            # Safe mode: terminal only, no Telegram
+            color = "green" if win else "red"
+            console.print(f"[bold {color}][SAFE] Trade #{trade.id} {result_str}: ${pnl:+.2f}[/bold {color}]")
+        else:
+            # Normal mode: send Telegram alert
+            stats = await self.db.get_paper_trade_stats()
+            msg = self._format_result_alert(trade, resolved_dir, win, pnl, btc_close, stats)
+            await self.alerter.send_raw_message(msg)
+            console.print(f"[{'green' if win else 'red'}]Paper trade #{trade.id} {result_str}: ${pnl:+.2f}[/{'green' if win else 'red'}]")
 
     # ── Alert Formatting ────────────────────────────────────────────
 
@@ -892,20 +1017,27 @@ Consider pausing paper trading until resolved."""
             # Cleanup old traded windows (keep last 1 hour = 4 windows)
             cutoff_ts = window_ts - 3600
             self._traded_windows = {ts for ts in self._traded_windows if ts > cutoff_ts}
+            self._safe_traded_windows = {ts for ts in self._safe_traded_windows if ts > cutoff_ts}
 
         window = self._current_window
 
-        # Already traded this window (check both flags for robustness)
-        if window.traded or window.window_ts in self._traded_windows:
+        # Check which modes have already traded this window
+        normal_traded = window.traded or window.window_ts in self._traded_windows
+        safe_traded = window.window_ts in self._safe_traded_windows
+
+        if normal_traded and safe_traded:
             return
 
         # Calculate minutes remaining
         seconds_remaining = (window.window_end - now).total_seconds()
         minutes_remaining = seconds_remaining / 60.0
 
-        # Only evaluate when close enough to resolve
+        # Check if either mode wants to evaluate at this time
         max_minutes = 3.0 if self._tight_mode else 5.5
-        if minutes_remaining > max_minutes:
+        normal_ready = not normal_traded and minutes_remaining <= max_minutes
+        safe_ready = not safe_traded and minutes_remaining < 1.0
+
+        if not normal_ready and not safe_ready:
             return
 
         # Get current BTC price from Hyperliquid
@@ -944,36 +1076,42 @@ Consider pausing paper trading until resolved."""
                     f"Down mid={down_mid} ask={down_ask}[/dim]"
                 )
 
-        # Evaluate signal
-        signal = self._evaluate_signal(
-            btc_now=btc_now,
-            price_to_beat=window.price_to_beat,
-            minutes_remaining=minutes_remaining,
-            utc_hour=now.hour,
-            utc_minute=now.minute,
-            poly_up_price=poly_up,
-            btc_at_open=window.btc_price_at_open,
-            market=window.market,
-            chainlink_price=chainlink_price,
-        )
-        # Attach CLOB ask prices for realistic entry pricing
-        signal.poly_up_ask = poly_up_ask
-        signal.poly_down_ask = poly_down_ask
+        # ── Normal mode evaluation ──
+        if normal_ready:
+            signal = self._evaluate_signal(
+                btc_now=btc_now,
+                price_to_beat=window.price_to_beat,
+                minutes_remaining=minutes_remaining,
+                utc_hour=now.hour,
+                utc_minute=now.minute,
+                poly_up_price=poly_up,
+                btc_at_open=window.btc_price_at_open,
+                market=window.market,
+                chainlink_price=chainlink_price,
+            )
+            # Attach CLOB ask prices for realistic entry pricing
+            signal.poly_up_ask = poly_up_ask
+            signal.poly_down_ask = poly_down_ask
 
-        if signal.confidence == Confidence.SKIP:
-            console.print(f"[dim]Paper trading: SKIP — {signal.skip_reason}[/dim]")
-            # Send skip notification to Telegram (once per window)
-            if window.window_ts != self._last_skip_window:
-                self._last_skip_window = window.window_ts
-                try:
-                    msg = self._format_skip_alert(signal)
-                    await self.alerter.send_raw_message(msg)
-                except Exception as e:
-                    console.print(f"[red]Paper trading: skip alert error: {e}[/red]")
-            return
+            if signal.confidence == Confidence.SKIP:
+                console.print(f"[dim]Paper trading: SKIP — {signal.skip_reason}[/dim]")
+                # Send skip notification to Telegram (once per window)
+                if window.window_ts != self._last_skip_window:
+                    self._last_skip_window = window.window_ts
+                    try:
+                        msg = self._format_skip_alert(signal)
+                        await self.alerter.send_raw_message(msg)
+                    except Exception as e:
+                        console.print(f"[red]Paper trading: skip alert error: {e}[/red]")
+            else:
+                await self._place_paper_trade(signal)
 
-        # Place trade
-        await self._place_paper_trade(signal)
+        # ── Safe scalper evaluation (independent of normal mode) ──
+        if safe_ready:
+            await self._evaluate_safe_scalper(
+                window, btc_now, chainlink_price,
+                poly_up_ask, poly_down_ask, minutes_remaining,
+            )
 
     async def run(self) -> None:
         """Run the paper trading loop."""
@@ -985,6 +1123,13 @@ Consider pausing paper trading until resolved."""
         self._total_wins = stats["wins"]
         self._total_losses = stats["losses"]
         self._total_pnl = stats["total_pnl"]
+
+        # Load safe mode stats from DB
+        safe_stats = await self.db.get_safe_paper_trade_stats()
+        self._safe_wins = safe_stats["wins"]
+        self._safe_losses = safe_stats["losses"]
+        self._safe_pnl = safe_stats["total_pnl"]
+
         self._check_daily_reset()
 
         while self._running:
