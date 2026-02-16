@@ -101,6 +101,11 @@ class PaperTradingEngine:
         self._total_losses = 0
         self._total_pnl = 0.0
 
+        # Tight mode: after a loss, only trade within last 3 min.
+        # After 5 consecutive wins in tight mode, revert to normal (5.5 min).
+        self._tight_mode = False
+        self._wins_since_tight = 0
+
         # Market discovery cache: window_ts -> GammaMarket
         self._market_cache: dict[int, GammaMarket | None] = {}
 
@@ -209,11 +214,16 @@ class PaperTradingEngine:
         return HourZone.SAFE
 
     @staticmethod
-    def _get_min_gap(minutes_remaining: float) -> float | None:
+    def _get_min_gap(minutes_remaining: float, tight_mode: bool = False) -> float | None:
         """Get minimum BTC gap (USD) required based on time remaining.
 
-        Returns None if too early to trade (>5.5 min remaining).
+        Returns None if too early to trade.
+        Normal mode: trade within last 5.5 min.
+        Tight mode (after a loss): trade within last 3 min only.
         """
+        max_minutes = 3.0 if tight_mode else 5.5
+        if minutes_remaining > max_minutes:
+            return None  # Too early, SKIP
         if minutes_remaining <= 1.5:
             return 25.0
         elif minutes_remaining <= 2.5:
@@ -347,10 +357,12 @@ class PaperTradingEngine:
             signal.skip_reason = f"BLACKLIST zone ({utc_hour}:{utc_minute:02d} UTC / {utc_hour+7}:{utc_minute:02d} WIB)"
             return signal
 
-        # 2. Time filter — only trade in last 5.5 minutes
-        min_gap = self._get_min_gap(minutes_remaining)
+        # 2. Time filter — tight mode (after loss): last 3 min; normal: last 5.5 min
+        min_gap = self._get_min_gap(minutes_remaining, tight_mode=self._tight_mode)
         if min_gap is None:
-            signal.skip_reason = f"Too early ({minutes_remaining:.1f}min remaining, need <=5.5min)"
+            max_min = 3.0 if self._tight_mode else 5.5
+            mode_str = "TIGHT" if self._tight_mode else "normal"
+            signal.skip_reason = f"Too early ({minutes_remaining:.1f}min remaining, need <={max_min}min [{mode_str} mode, {self._wins_since_tight}/5 wins to reset])"
             return signal
 
         # 3. Gap calculation
@@ -611,12 +623,29 @@ Consider pausing paper trading until resolved."""
             pnl = trade_size * (1.0 - entry_price) / entry_price
             self._total_wins += 1
             self._consecutive_losses = 0
+
+            # Tight mode: count consecutive wins to exit tight mode
+            if self._tight_mode:
+                self._wins_since_tight += 1
+                if self._wins_since_tight >= 5:
+                    self._tight_mode = False
+                    self._wins_since_tight = 0
+                    console.print("[bold green]Paper trading: 5 win streak! Exiting tight mode → normal (5.5 min)[/bold green]")
         else:
             # Loss: lose the trade size
             pnl = -trade_size
             self._total_losses += 1
             self._consecutive_losses += 1
             self._daily_losses += 1
+
+            # Enter tight mode on any loss
+            if not self._tight_mode:
+                self._tight_mode = True
+                self._wins_since_tight = 0
+                console.print("[bold yellow]Paper trading: loss detected → entering tight mode (3 min only)[/bold yellow]")
+            else:
+                # Already tight, reset win counter
+                self._wins_since_tight = 0
 
         self._total_pnl += pnl
 
@@ -809,34 +838,36 @@ Consider pausing paper trading until resolved."""
                     console.print(f"[yellow]Paper trading: cannot get BTC open price: {e}[/yellow]")
                     return
 
-            # Cross-validate: compare with Hyperliquid to detect stale/bad data
-            hyper_open = None
-            try:
-                async with HyperliquidClient() as hl:
-                    hyper_open = await hl.get_btc_mid_price()
-            except Exception:
-                pass
-
-            if hyper_open is not None and abs(btc_open - hyper_open) > 50:
-                wib_now = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S")
-                msg = (
-                    f"\u26a0\ufe0f <b>PRICE TO BEAT MISMATCH</b>\n\n"
-                    f"<b>Window:</b> {datetime.utcfromtimestamp(window_ts).strftime('%H:%M')} UTC\n"
-                    f"<b>Our BTC Open ({price_source}):</b> ${btc_open:,.2f}\n"
-                    f"<b>Hyperliquid BTC:</b> ${hyper_open:,.2f}\n"
-                    f"<b>Diff:</b> ${abs(btc_open - hyper_open):,.2f}\n\n"
-                    f"\u26a0\ufe0f Price to beat may be inaccurate. "
-                    f"Trades this window may have wrong direction."
-                )
-                console.print(f"[bold red]Paper trading: PRICE MISMATCH ${abs(btc_open - hyper_open):,.2f}[/bold red]")
-                try:
-                    await self.alerter.send_raw_message(msg)
-                except Exception:
-                    pass
-
             # Discover market for this window via slug pattern
             market = await self._discover_btc_15m_market(window_ts)
             market_id = market.id if market else None
+
+            # Cross-validate: compare our Chainlink price vs Polymarket CLOB prices.
+            # If CLOB already strongly favors one direction at window start,
+            # our price-to-beat may differ from what Polymarket uses.
+            if market:
+                up_mid, down_mid, _, _ = await self._fetch_clob_prices(market)
+                if up_mid is not None and down_mid is not None:
+                    # Strong skew at window start means Polymarket's price-to-beat
+                    # may differ from ours (or price already moved significantly)
+                    skew = abs(up_mid - 0.50)
+                    if skew > 0.20:
+                        poly_dir = "Up" if up_mid > 0.50 else "Down"
+                        msg = (
+                            f"\u26a0\ufe0f <b>PRICE TO BEAT MISMATCH</b>\n\n"
+                            f"<b>Window:</b> {(datetime.utcfromtimestamp(window_ts) - timedelta(hours=5)).strftime('%H:%M')} ET\n"
+                            f"<b>Our BTC Open ({price_source}):</b> ${btc_open:,.2f}\n\n"
+                            f"<b>Polymarket CLOB:</b>\n"
+                            f"  Up: {up_mid*100:.0f}¢ | Down: {down_mid*100:.0f}¢\n"
+                            f"  Market leans <b>{poly_dir}</b> ({skew*100:.0f}¢ from 50/50)\n\n"
+                            f"\u26a0\ufe0f Polymarket already strongly skewed at window start. "
+                            f"Our price-to-beat may be stale or differ from Polymarket's."
+                        )
+                        console.print(f"[bold red]Paper trading: PRICE MISMATCH — CLOB skew {skew*100:.0f}¢ ({poly_dir})[/bold red]")
+                        try:
+                            await self.alerter.send_raw_message(msg)
+                        except Exception:
+                            pass
 
             # These markets resolve "Up" if BTC close >= open (per Chainlink).
             price_to_beat = btc_open
@@ -872,8 +903,9 @@ Consider pausing paper trading until resolved."""
         seconds_remaining = (window.window_end - now).total_seconds()
         minutes_remaining = seconds_remaining / 60.0
 
-        # Only evaluate in last 5.5 minutes
-        if minutes_remaining > 5.5:
+        # Only evaluate when close enough to resolve
+        max_minutes = 3.0 if self._tight_mode else 5.5
+        if minutes_remaining > max_minutes:
             return
 
         # Get current BTC price from Hyperliquid
