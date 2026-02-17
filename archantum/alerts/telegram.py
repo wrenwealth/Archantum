@@ -18,7 +18,6 @@ from archantum.analysis.arbitrage import (
 )
 from archantum.analysis.price import PriceMovement
 from archantum.analysis.trends import TrendSignal
-from archantum.analysis.whale import WhaleActivity
 from archantum.analysis.new_market import NewMarket
 from archantum.analysis.resolution import ResolutionAlert
 from archantum.analysis.accuracy import AccuracyTracker
@@ -53,7 +52,7 @@ class TelegramAlerter:
     """Handles sending alerts via Telegram with console fallback."""
 
     # Alert types that should be tracked for accuracy
-    TRACKED_ALERT_TYPES = {'arbitrage', 'volume_spike', 'price_move', 'trend', 'whale'}
+    TRACKED_ALERT_TYPES = {'arbitrage', 'volume_spike', 'price_move', 'trend'}
 
     def __init__(self, db: Database):
         self.db = db
@@ -334,32 +333,6 @@ Confidence: {guaranteed_profit.confidence} {conf_emoji}"""
             alert_type="trend",
             message=message,
             details=signal.to_dict(),
-        )
-
-    def format_whale_alert(self, whale: WhaleActivity) -> AlertMessage:
-        """Format a whale activity as an alert."""
-        emoji = "🐋"
-        direction_emoji = "🟢" if whale.direction == "buy" else "🔴" if whale.direction == "sell" else "⚪"
-        link = whale.polymarket_url or "N/A"
-
-        message = f"""{emoji} <b>WHALE ACTIVITY DETECTED</b>
-
-<b>Market:</b> {whale.question[:100]}...
-
-<b>Estimated Trade:</b> ${whale.estimated_trade_size:,.0f}
-<b>Volume Change:</b> +{whale.volume_change_pct:.1f}%
-<b>Direction:</b> {direction_emoji} {whale.direction.upper()}
-
-<b>Previous 24h Vol:</b> ${whale.previous_volume:,.0f}
-<b>Current 24h Vol:</b> ${whale.current_volume:,.0f}
-
-📊 <a href="{link}">View on Polymarket</a>"""
-
-        return AlertMessage(
-            market_id=whale.market_id,
-            alert_type="whale",
-            message=message,
-            details=whale.to_dict(),
         )
 
     def format_new_market_alert(self, market: NewMarket) -> AlertMessage:

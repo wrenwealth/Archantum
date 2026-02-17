@@ -636,7 +636,7 @@ class Database:
 
             # Stats by type
             by_type = {}
-            alert_types = ['arbitrage', 'volume_spike', 'price_move', 'trend', 'whale']
+            alert_types = ['arbitrage', 'volume_spike', 'price_move', 'trend']
 
             for alert_type in alert_types:
                 type_total_result = await session.execute(

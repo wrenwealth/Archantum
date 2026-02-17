@@ -50,7 +50,6 @@ class AccuracyTracker:
         "volume_spike": {"price_move_pct": 5.0},  # Price moved >= 5% either direction
         "price_move": {"continue_pct": 2.0},  # Price continued >= 2% same direction
         "trend": {"bullish_pct": 3.0, "bearish_pct": 3.0},  # >= 3% in signaled direction
-        "whale": {"any_move": True},  # Any move in signaled direction
     }
 
     def __init__(self, db: Database):
@@ -176,8 +175,6 @@ class AccuracyTracker:
             return self._eval_price_move(signal_yes, outcome_yes, alert_details)
         elif alert_type == "trend":
             return self._eval_trend(signal_yes, outcome_yes, alert_details)
-        elif alert_type == "whale":
-            return self._eval_whale(signal_yes, outcome_yes, alert_details)
         else:
             # Unknown alert type - default evaluation
             price_change = outcome_yes - signal_yes
@@ -276,28 +273,6 @@ class AccuracyTracker:
         else:  # bearish, reversal_down
             threshold = self.THRESHOLDS["trend"]["bearish_pct"]
             profitable = price_change_pct <= -threshold
-
-        return profitable, price_change_pct
-
-    def _eval_whale(
-        self,
-        signal_yes: float,
-        outcome_yes: float,
-        details: dict,
-    ) -> tuple[bool, float]:
-        """Whale: Profitable if price moved in signaled direction (any amount)."""
-        if signal_yes == 0:
-            return False, 0.0
-
-        direction = details.get("direction", "buy")
-
-        price_change = outcome_yes - signal_yes
-        price_change_pct = (price_change / signal_yes) * 100
-
-        if direction == "buy":
-            profitable = price_change > 0
-        else:  # sell
-            profitable = price_change < 0
 
         return profitable, price_change_pct
 

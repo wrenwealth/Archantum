@@ -1134,17 +1134,23 @@ Consider pausing paper trading until resolved."""
 
         while self._running:
             try:
-                await self._tick()
-                await self._check_resolution()
-            except BaseException as e:
+                await asyncio.wait_for(self._tick(), timeout=60)
+            except asyncio.TimeoutError:
+                console.print("[yellow]Paper trading: _tick() timed out (60s)[/yellow]")
+            except Exception as e:
                 console.print(f"[red]Paper trading tick error ({type(e).__name__}): {e}[/red]")
-                import traceback
-                traceback.print_exc()
-                # Re-raise KeyboardInterrupt so the process can actually stop
-                if isinstance(e, KeyboardInterrupt):
-                    raise
 
-            await asyncio.sleep(settings.paper_trading_poll_interval)
+            try:
+                await asyncio.wait_for(self._check_resolution(), timeout=60)
+            except asyncio.TimeoutError:
+                console.print("[yellow]Paper trading: _check_resolution() timed out (60s)[/yellow]")
+            except Exception as e:
+                console.print(f"[red]Paper trading resolution error ({type(e).__name__}): {e}[/red]")
+
+            try:
+                await asyncio.sleep(settings.paper_trading_poll_interval)
+            except asyncio.CancelledError:
+                console.print("[yellow]Paper trading: sleep cancelled, continuing...[/yellow]")
 
     def stop(self) -> None:
         """Stop the paper trading loop."""

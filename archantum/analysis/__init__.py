@@ -11,7 +11,6 @@ from .arbitrage import (
 )
 from .price import PriceAnalyzer, PriceMovement
 from .trends import TrendAnalyzer, TrendSignal
-from .whale import WhaleAnalyzer, WhaleActivity
 from .new_market import NewMarketAnalyzer, NewMarket
 from .resolution import ResolutionAnalyzer, ResolutionAlert
 from .historical import HistoricalAnalyzer, PriceHistory, BacktestResult
@@ -41,8 +40,6 @@ __all__ = [
     "PriceMovement",
     "TrendAnalyzer",
     "TrendSignal",
-    "WhaleAnalyzer",
-    "WhaleActivity",
     "NewMarketAnalyzer",
     "NewMarket",
     "ResolutionAnalyzer",

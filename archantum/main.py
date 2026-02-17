@@ -14,7 +14,7 @@ from archantum.api import GammaClient, CLOBClient, KalshiClient
 from archantum.api.clob import PriceData
 from archantum.api.gamma import GammaMarket
 from archantum.db import Database
-from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, WhaleAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker, SmartMoneyTracker
+from archantum.analysis import ArbitrageAnalyzer, PriceAnalyzer, TrendAnalyzer, NewMarketAnalyzer, ResolutionAnalyzer, AccuracyTracker, SmartMoneyTracker
 from archantum.analysis.indicators import TechnicalIndicatorCalculator
 from archantum.analysis.confluence import ConfluenceAnalyzer
 from archantum.analysis.scoring import MarketScorer
@@ -61,7 +61,6 @@ class PollingEngine:
         self.arbitrage_analyzer = ArbitrageAnalyzer()
         self.price_analyzer = PriceAnalyzer(self.db)
         self.trend_analyzer = TrendAnalyzer(self.db)
-        self.whale_analyzer = WhaleAnalyzer(self.db)
         self.new_market_analyzer = NewMarketAnalyzer(self.db)
         self.resolution_analyzer = ResolutionAnalyzer(self.db)
         self.accuracy_tracker = AccuracyTracker(self.db)
@@ -195,7 +194,6 @@ class PollingEngine:
             "prices_fetched": 0,
             "arbitrage_opportunities": 0,
             "price_movements": 0,
-            "whale_activities": 0,
             "new_markets": 0,
             "resolution_alerts": 0,
             "accuracy_evaluated": 0,
@@ -299,10 +297,6 @@ class PollingEngine:
             # Price movement detection
             price_moves = await self.price_analyzer.analyze(markets, all_prices)
             results["price_movements"] = len(price_moves)
-
-            # Whale activity detection
-            whale_activities = await self.whale_analyzer.analyze(markets)
-            results["whale_activities"] = len(whale_activities)
 
             # New market detection
             new_markets = await self.new_market_analyzer.analyze(markets)
@@ -629,13 +623,6 @@ class PollingEngine:
                 self._mark_alert_sent(move.market_id, "price_move")
                 results["alerts_sent"] += 1
 
-            for whale in whale_activities:
-                if not self._should_send_alert(whale.market_id, "whale"):
-                    continue
-                alert = self.alerter.format_whale_alert(whale)
-                await self.alerter.send_alert(alert)
-                self._mark_alert_sent(whale.market_id, "whale")
-                results["alerts_sent"] += 1
 
             for new_market in new_markets:
                 if not self._should_send_alert(new_market.market_id, "new_market"):
@@ -1072,7 +1059,6 @@ class PollingEngine:
                 console.print(f"  Prices: {results['prices_fetched']} (source: {results['data_source']})")
                 console.print(f"  Arbitrage opps: {results['arbitrage_opportunities']}")
                 console.print(f"  Price moves: {results['price_movements']}")
-                console.print(f"  Whale activities: {results['whale_activities']}")
                 console.print(f"  New markets: {results['new_markets']}")
                 console.print(f"  Resolution alerts: {results['resolution_alerts']}")
                 console.print(f"  Accuracy evaluated: {results['accuracy_evaluated']}")
