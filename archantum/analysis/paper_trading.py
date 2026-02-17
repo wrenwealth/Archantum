@@ -586,17 +586,16 @@ class PaperTradingEngine:
             f"Poly={poly_resolved.value} vs Chainlink={chainlink_expected.value}[/bold red]"
         )
 
-        msg = f"""⚠️ <b>RESOLUTION MISMATCH DETECTED</b>
+        msg = f"""⚠️ <b>RESOLUTION MISMATCH</b>
 
 <b>Trade #{trade.id}</b>
 <b>Polymarket resolved:</b> {poly_resolved.value}
 <b>Chainlink expected:</b> {chainlink_expected.value}
 
-<b>BTC Open (our record):</b> ${trade.btc_price_at_open:,.2f}
+<b>BTC Open:</b> ${trade.btc_price_at_open:,.2f}
 <b>Gap at entry:</b> ${trade.gap_usd:+.0f}
 
-⚠️ Polymarket may have UI/data bug. Resolution might be incorrect.
-Consider pausing paper trading until resolved."""
+ℹ️ Mismatch logged. Paper trading continues normally."""
 
         try:
             await self.alerter.send_raw_message(msg)
@@ -1003,20 +1002,24 @@ Consider pausing paper trading until resolved."""
                 await asyncio.wait_for(self._tick(), timeout=60)
             except asyncio.TimeoutError:
                 console.print("[yellow]Paper trading: _tick() timed out (60s)[/yellow]")
-            except Exception as e:
+            except asyncio.CancelledError:
+                console.print("[yellow]Paper trading: _tick() cancelled, continuing...[/yellow]")
+            except BaseException as e:
                 console.print(f"[red]Paper trading tick error ({type(e).__name__}): {e}[/red]")
 
             try:
                 await asyncio.wait_for(self._check_resolution(), timeout=60)
             except asyncio.TimeoutError:
                 console.print("[yellow]Paper trading: _check_resolution() timed out (60s)[/yellow]")
-            except Exception as e:
+            except asyncio.CancelledError:
+                console.print("[yellow]Paper trading: _check_resolution() cancelled, continuing...[/yellow]")
+            except BaseException as e:
                 console.print(f"[red]Paper trading resolution error ({type(e).__name__}): {e}[/red]")
 
             try:
                 await asyncio.sleep(settings.paper_trading_poll_interval)
-            except asyncio.CancelledError:
-                console.print("[yellow]Paper trading: sleep cancelled, continuing...[/yellow]")
+            except (asyncio.CancelledError, BaseException):
+                console.print("[yellow]Paper trading: sleep interrupted, continuing...[/yellow]")
 
     def stop(self) -> None:
         """Stop the paper trading loop."""
