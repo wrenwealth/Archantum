@@ -456,7 +456,6 @@ class PaperTrade(Base):
     running_pnl = Column(Float, nullable=True)
     running_wins = Column(Integer, nullable=True)
     running_losses = Column(Integer, nullable=True)
-    safe_mode = Column(Boolean, default=False)
 
 
 class SpeedSummary(Base):

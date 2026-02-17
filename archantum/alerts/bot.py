@@ -96,9 +96,6 @@ class TelegramBot:
         # Esports scanner
         self.application.add_handler(CommandHandler("esports", self.cmd_esports))
 
-        # Safe scalper stats
-        self.application.add_handler(CommandHandler("safe_stats", self.cmd_safe_stats))
-
         # Utility commands
         self.application.add_handler(CommandHandler("getid", self.cmd_getid))
 
@@ -130,7 +127,6 @@ class TelegramBot:
             BotCommand("accuracy", "Signal accuracy stats"),
             BotCommand("esports", "Esports markets & arb scan"),
             BotCommand("stats", "Alert statistics"),
-            BotCommand("safe_stats", "Safe scalper stats"),
             BotCommand("status", "Bot status"),
             BotCommand("help", "Show all commands"),
         ]
@@ -433,29 +429,6 @@ Use /help to see all available commands."""
 
         except Exception as e:
             await update.message.reply_text(f"Error fetching stats: {e}")
-
-    async def cmd_safe_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /safe_stats command — safe scalper paper trade stats."""
-        try:
-            stats = await self.db.get_safe_paper_trade_stats()
-
-            pnl_sign = "+" if stats["total_pnl"] >= 0 else ""
-            today_pnl_sign = "+" if stats["today_pnl"] >= 0 else ""
-
-            text = "<b>Safe Scalper Stats</b>\n\n"
-            text += "<b>All-Time:</b>\n"
-            text += f"  Wins: {stats['wins']} | Losses: {stats['losses']}\n"
-            text += f"  Win Rate: {stats['win_rate']:.1f}%\n"
-            text += f"  PnL: ${pnl_sign}{stats['total_pnl']:.2f}\n\n"
-            text += "<b>Today:</b>\n"
-            text += f"  Wins: {stats['today_wins']} | Losses: {stats['today_losses']}\n"
-            text += f"  PnL: ${today_pnl_sign}{stats['today_pnl']:.2f}\n\n"
-            text += f"<b>Pending:</b> {stats['pending']} trades"
-
-            await update.message.reply_text(text, parse_mode="HTML")
-
-        except Exception as e:
-            await update.message.reply_text(f"Error fetching safe stats: {e}")
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
