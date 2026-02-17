@@ -34,5 +34,8 @@ htmlcov/
 # macOS
 .DS_Store
 
+# Excel files
+*.xlsx
+
 # Claude Code
 .claude/
