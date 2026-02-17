@@ -218,22 +218,14 @@ class PaperTradingEngine:
         """Get minimum BTC gap (USD) required based on time remaining.
 
         Returns None if too early to trade.
-        Normal mode: trade within last 5.5 min.
+        Normal mode: trade within last 4 min.
         Tight mode (after a loss): trade within last 3 min only.
+        Minimum gap always $50 (data shows <$50 = 86% WR, not worth it).
         """
-        max_minutes = 3.0 if tight_mode else 5.5
+        max_minutes = 3.0 if tight_mode else 4.0
         if minutes_remaining > max_minutes:
             return None  # Too early, SKIP
-        if minutes_remaining <= 1.5:
-            return 25.0
-        elif minutes_remaining <= 2.5:
-            return 50.0
-        elif minutes_remaining <= 3.5:
-            return 50.0
-        elif minutes_remaining <= 5.5:
-            return 75.0
-        else:
-            return None  # Too early, SKIP
+        return 50.0  # Flat $50 minimum at all entry times
 
     @staticmethod
     def _evaluate_confidence(
@@ -357,10 +349,10 @@ class PaperTradingEngine:
             signal.skip_reason = f"BLACKLIST zone ({utc_hour}:{utc_minute:02d} UTC / {utc_hour+7}:{utc_minute:02d} WIB)"
             return signal
 
-        # 2. Time filter — tight mode (after loss): last 3 min; normal: last 5.5 min
+        # 2. Time filter — tight mode (after loss): last 3 min; normal: last 4 min
         min_gap = self._get_min_gap(minutes_remaining, tight_mode=self._tight_mode)
         if min_gap is None:
-            max_min = 3.0 if self._tight_mode else 5.5
+            max_min = 3.0 if self._tight_mode else 4.0
             mode_str = "TIGHT" if self._tight_mode else "normal"
             signal.skip_reason = f"Too early ({minutes_remaining:.1f}min remaining, need <={max_min}min [{mode_str} mode, {self._wins_since_tight}/5 wins to reset])"
             return signal
@@ -437,6 +429,24 @@ class PaperTradingEngine:
             actual_entry_price = min(mid_price + 0.05, 0.99)
         else:
             actual_entry_price = settings.paper_trading_entry_price
+
+        # Entry price filter: only trade in the 70-94c sweet spot
+        # <70c = too risky (78.9% WR), >=95c = too expensive ($2/trade profit)
+        if actual_entry_price < 0.70:
+            console.print(f"[dim]Paper trading: SKIP — entry {actual_entry_price*100:.0f}c < 70c (too risky)[/dim]")
+            try:
+                msg = (
+                    f"⏭ <b>PAPER TRADE — SKIP</b>\n\n"
+                    f"<b>Reason:</b> Entry price {actual_entry_price*100:.0f}¢ &lt; 70¢ (too risky)\n"
+                    f"<b>Direction:</b> {signal.direction.value} | <b>Gap:</b> ${signal.gap_usd:+.0f}"
+                )
+                await self.alerter.send_raw_message(msg)
+            except Exception:
+                pass
+            return None
+        if actual_entry_price >= 0.95:
+            console.print(f"[dim]Paper trading: SKIP — entry {actual_entry_price*100:.0f}c >= 95c (profit too small)[/dim]")
+            return None
 
         trade_data = {
             "window_id": str(window.window_ts),
@@ -904,7 +914,7 @@ Consider pausing paper trading until resolved."""
         minutes_remaining = seconds_remaining / 60.0
 
         # Only evaluate when close enough to resolve
-        max_minutes = 3.0 if self._tight_mode else 5.5
+        max_minutes = 3.0 if self._tight_mode else 4.0
         if minutes_remaining > max_minutes:
             return
 
