@@ -112,6 +112,9 @@ class PaperTradingEngine:
         # Telegram skip notification: only send once per window to avoid spam
         self._last_skip_window: int = 0
 
+        # Mismatch tracking: send recovery notification when prices match again
+        self._has_active_mismatch = False
+
         # Track traded windows to prevent duplicate trades (robust dedup)
         self._traded_windows: set[int] = set()
 
@@ -535,6 +538,21 @@ class PaperTradingEngine:
             chainlink_expected = await self._get_chainlink_expected_resolution(trade)
             if chainlink_expected and resolved_dir != chainlink_expected:
                 await self._alert_resolution_mismatch(trade, resolved_dir, chainlink_expected)
+            elif chainlink_expected and resolved_dir == chainlink_expected and self._has_active_mismatch:
+                # Prices match again after a mismatch — notify recovery
+                self._has_active_mismatch = False
+                try:
+                    recovery_msg = f"""✅ <b>MISMATCH RESOLVED</b>
+
+<b>Trade #{trade.id}</b>
+<b>Polymarket:</b> {resolved_dir.value}
+<b>Chainlink:</b> {chainlink_expected.value}
+
+✅ Polymarket and Chainlink agree again. Everything back to normal."""
+                    await self.alerter.send_raw_message(recovery_msg)
+                    console.print(f"[bold green]MISMATCH RESOLVED: Poly and Chainlink agree on Trade #{trade.id}[/bold green]")
+                except Exception as e:
+                    console.print(f"[red]Failed to send recovery alert: {e}[/red]")
 
             await self._resolve_trade(trade, resolved_dir, btc_close=btc_close)
 
@@ -586,16 +604,19 @@ class PaperTradingEngine:
             f"Poly={poly_resolved.value} vs Chainlink={chainlink_expected.value}[/bold red]"
         )
 
-        msg = f"""⚠️ <b>RESOLUTION MISMATCH</b>
+        self._has_active_mismatch = True
+
+        msg = f"""⚠️ <b>RESOLUTION MISMATCH DETECTED</b>
 
 <b>Trade #{trade.id}</b>
 <b>Polymarket resolved:</b> {poly_resolved.value}
 <b>Chainlink expected:</b> {chainlink_expected.value}
 
-<b>BTC Open:</b> ${trade.btc_price_at_open:,.2f}
+<b>BTC Open (our record):</b> ${trade.btc_price_at_open:,.2f}
 <b>Gap at entry:</b> ${trade.gap_usd:+.0f}
 
-ℹ️ Mismatch logged. Paper trading continues normally."""
+⚠️ Polymarket may have UI/data bug. Resolution might be incorrect.
+Paper trading continues — will notify when prices match again."""
 
         try:
             await self.alerter.send_raw_message(msg)
