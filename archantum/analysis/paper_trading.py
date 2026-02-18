@@ -872,32 +872,14 @@ Paper trading continues — will notify when prices match again."""
             market = await self._discover_btc_15m_market(window_ts)
             market_id = market.id if market else None
 
-            # Cross-validate: compare our Chainlink price vs Polymarket CLOB prices.
-            # If CLOB already strongly favors one direction at window start,
-            # our price-to-beat may differ from what Polymarket uses.
+            # Log CLOB skew at window start (terminal only, no Telegram)
             if market:
                 up_mid, down_mid, _, _ = await self._fetch_clob_prices(market)
                 if up_mid is not None and down_mid is not None:
-                    # Strong skew at window start means Polymarket's price-to-beat
-                    # may differ from ours (or price already moved significantly)
                     skew = abs(up_mid - 0.50)
                     if skew > 0.20:
                         poly_dir = "Up" if up_mid > 0.50 else "Down"
-                        msg = (
-                            f"\u26a0\ufe0f <b>PRICE TO BEAT MISMATCH</b>\n\n"
-                            f"<b>Window:</b> {(datetime.utcfromtimestamp(window_ts) - timedelta(hours=5)).strftime('%H:%M')} ET\n"
-                            f"<b>Our BTC Open ({price_source}):</b> ${btc_open:,.2f}\n\n"
-                            f"<b>Polymarket CLOB:</b>\n"
-                            f"  Up: {up_mid*100:.0f}¢ | Down: {down_mid*100:.0f}¢\n"
-                            f"  Market leans <b>{poly_dir}</b> ({skew*100:.0f}¢ from 50/50)\n\n"
-                            f"\u26a0\ufe0f Polymarket already strongly skewed at window start. "
-                            f"Our price-to-beat may be stale or differ from Polymarket's."
-                        )
-                        console.print(f"[bold red]Paper trading: PRICE MISMATCH — CLOB skew {skew*100:.0f}¢ ({poly_dir})[/bold red]")
-                        try:
-                            await self.alerter.send_raw_message(msg)
-                        except Exception:
-                            pass
+                        console.print(f"[dim]Paper trading: CLOB skew at window start — {skew*100:.0f}¢ ({poly_dir})[/dim]")
 
             # These markets resolve "Up" if BTC close >= open (per Chainlink).
             price_to_beat = btc_open
