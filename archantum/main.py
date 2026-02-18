@@ -1042,6 +1042,14 @@ class PollingEngine:
             self._paper_trading_task = asyncio.create_task(self.paper_trader.run())
 
         while self.running:
+            # Watchdog: restart paper trading if it died
+            if self.paper_trader and hasattr(self, '_paper_trading_task'):
+                if self._paper_trading_task.done():
+                    exc = self._paper_trading_task.exception() if not self._paper_trading_task.cancelled() else None
+                    reason = f" ({type(exc).__name__}: {exc})" if exc else " (no exception)"
+                    console.print(f"[bold red]Paper trading task died{reason} — restarting...[/bold red]")
+                    self._paper_trading_task = asyncio.create_task(self.paper_trader.run())
+
             try:
                 console.print(f"[bold]{'=' * 50}[/bold]")
                 console.print(f"[bold]Poll started at {datetime.utcnow().isoformat()}[/bold]")

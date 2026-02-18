@@ -1008,39 +1008,59 @@ Paper trading continues — will notify when prices match again."""
     async def run(self) -> None:
         """Run the paper trading loop."""
         self._running = True
+        self._last_heartbeat = time.time()
         console.print("[bold green]Paper Trading Engine started[/bold green]")
 
-        # Load running stats from DB
-        stats = await self.db.get_paper_trade_stats()
-        self._total_wins = stats["wins"]
-        self._total_losses = stats["losses"]
-        self._total_pnl = stats["total_pnl"]
+        try:
+            # Load running stats from DB
+            stats = await self.db.get_paper_trade_stats()
+            self._total_wins = stats["wins"]
+            self._total_losses = stats["losses"]
+            self._total_pnl = stats["total_pnl"]
 
-        self._check_daily_reset()
+            self._check_daily_reset()
 
-        while self._running:
-            try:
-                await asyncio.wait_for(self._tick(), timeout=60)
-            except asyncio.TimeoutError:
-                console.print("[yellow]Paper trading: _tick() timed out (60s)[/yellow]")
-            except asyncio.CancelledError:
-                console.print("[yellow]Paper trading: _tick() cancelled, continuing...[/yellow]")
-            except BaseException as e:
-                console.print(f"[red]Paper trading tick error ({type(e).__name__}): {e}[/red]")
+            while self._running:
+                # Heartbeat every 5 minutes so we know the loop is alive
+                now_ts = time.time()
+                if now_ts - self._last_heartbeat >= 300:
+                    self._last_heartbeat = now_ts
+                    wib_now = datetime.utcfromtimestamp(now_ts) + timedelta(hours=7)
+                    window = self._current_window
+                    w_info = f"window={'traded' if window and window.traded else 'open'}" if window else "no window"
+                    mode = "TIGHT" if self._tight_mode else "normal"
+                    console.print(
+                        f"[dim]Paper trading heartbeat: {wib_now.strftime('%H:%M')} WIB | "
+                        f"{w_info} | {mode} mode | "
+                        f"{self._total_wins}W {self._total_losses}L ${self._total_pnl:+.2f}[/dim]"
+                    )
 
-            try:
-                await asyncio.wait_for(self._check_resolution(), timeout=60)
-            except asyncio.TimeoutError:
-                console.print("[yellow]Paper trading: _check_resolution() timed out (60s)[/yellow]")
-            except asyncio.CancelledError:
-                console.print("[yellow]Paper trading: _check_resolution() cancelled, continuing...[/yellow]")
-            except BaseException as e:
-                console.print(f"[red]Paper trading resolution error ({type(e).__name__}): {e}[/red]")
+                try:
+                    await asyncio.wait_for(self._tick(), timeout=60)
+                except asyncio.TimeoutError:
+                    console.print("[yellow]Paper trading: _tick() timed out (60s)[/yellow]")
+                except asyncio.CancelledError:
+                    console.print("[yellow]Paper trading: _tick() cancelled, continuing...[/yellow]")
+                except BaseException as e:
+                    console.print(f"[red]Paper trading tick error ({type(e).__name__}): {e}[/red]")
 
-            try:
-                await asyncio.sleep(settings.paper_trading_poll_interval)
-            except (asyncio.CancelledError, BaseException):
-                console.print("[yellow]Paper trading: sleep interrupted, continuing...[/yellow]")
+                try:
+                    await asyncio.wait_for(self._check_resolution(), timeout=60)
+                except asyncio.TimeoutError:
+                    console.print("[yellow]Paper trading: _check_resolution() timed out (60s)[/yellow]")
+                except asyncio.CancelledError:
+                    console.print("[yellow]Paper trading: _check_resolution() cancelled, continuing...[/yellow]")
+                except BaseException as e:
+                    console.print(f"[red]Paper trading resolution error ({type(e).__name__}): {e}[/red]")
+
+                try:
+                    await asyncio.sleep(settings.paper_trading_poll_interval)
+                except (asyncio.CancelledError, BaseException):
+                    console.print("[yellow]Paper trading: sleep interrupted, continuing...[/yellow]")
+
+        except BaseException as e:
+            console.print(f"[bold red]Paper trading run() CRASHED: {type(e).__name__}: {e}[/bold red]")
+            raise  # Re-raise so the watchdog in main.py can detect it
 
     def stop(self) -> None:
         """Stop the paper trading loop."""
